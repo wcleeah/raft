@@ -12,7 +12,49 @@ import (
 
 var update = flag.Bool("update", false, "update golden files")
 
-func TestAERToBytes(t *testing.T) {
+func TestRPCBaseEncode(t *testing.T) {
+	rb := rpc.RPCBase{
+		RPCType:    1,
+		RelationId: 2,
+		Payload:    []byte("payload for rpc base"),
+	}
+
+	out := rb.Encode()
+	cmpBytesWithGolden(t, "RPCBaseEncode.golden", out)
+}
+
+func TestRPCBaseDecode(t *testing.T) {
+	rb := rpc.RPCBase{
+		RPCType:    3,
+		RelationId: 4,
+		Payload:    []byte("payload from golden data"),
+	}
+
+	out := rb.Encode()
+
+	golden := getBytesFromGolden(t, "RPCBaseDecode.golden", out)
+	rbOut := rpc.DecodeRPCBase(golden)
+
+	if diff := cmp.Diff(rb, *rbOut); diff != "" {
+		t.Fatalf("RPCBase mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestRPCBaseByteLayoutSync(t *testing.T) {
+	rb := rpc.RPCBase{
+		RPCType:    5,
+		RelationId: 6,
+		Payload:    []byte("rpc base byte layout"),
+	}
+
+	out := rb.Encode()
+	rbOut := rpc.DecodeRPCBase(out)
+	if diff := cmp.Diff(rb, *rbOut); diff != "" {
+		t.Fatalf("RPCBase byte layout mismatch, (-want +got):\n%s", diff)
+	}
+}
+
+func TestAEREncode(t *testing.T) {
 	aer := rpc.AppendEntriesReq{
 		Term:         1,
 		LeaderCommit: 2,
@@ -22,11 +64,11 @@ func TestAERToBytes(t *testing.T) {
 		Entries:      []byte("test i am a list of entries, i am also a string"),
 	}
 
-	out := aer.ToBytes()
-	cmpBytesWithGolden(t, "AERToBytes.golden", out)
+	out := aer.Encode()
+	cmpBytesWithGolden(t, "AEREncode.golden", out)
 }
 
-func TestAERFromBytes(t *testing.T) {
+func TestAERDecode(t *testing.T) {
 	aer := rpc.AppendEntriesReq{
 		Term:         6,
 		LeaderCommit: 7,
@@ -36,10 +78,10 @@ func TestAERFromBytes(t *testing.T) {
 		Entries:      []byte("hello from the other sideeeeeeeeee ii"),
 	}
 
-	out := aer.ToBytes()
+	out := aer.Encode()
 
-	golden := getBytesFromGolden(t, "AERFromBytes.golden", out)
-	aerOut := rpc.ToAppendEntriesReq(golden)
+	golden := getBytesFromGolden(t, "AERDecode.golden", out)
+	aerOut := rpc.DecodeAppendEntriesReq(golden)
 
 	if diff := cmp.Diff(aer, *aerOut); diff != "" {
 		t.Fatalf("AER mismatch (-want +got):\n%s", diff)
@@ -56,33 +98,33 @@ func TestAERByteLayoutSync(t *testing.T) {
 		Entries:      []byte("different different different"),
 	}
 
-	out := aer.ToBytes()
-	aerOut := rpc.ToAppendEntriesReq(out)
+	out := aer.Encode()
+	aerOut := rpc.DecodeAppendEntriesReq(out)
 	if diff := cmp.Diff(aer, *aerOut); diff != "" {
 		t.Fatalf("AER byte layout mismatch, (-want +got):\n%s", diff)
 	}
 }
 
-func TestAEResToBytes(t *testing.T) {
+func TestAEResEncode(t *testing.T) {
 	aer := rpc.AppendEntriesRes{
 		Term:    11,
 		Success: true,
 	}
 
-	out := aer.ToBytes()
-	cmpBytesWithGolden(t, "AEResToBytes.golden", out)
+	out := aer.Encode()
+	cmpBytesWithGolden(t, "AEResEncode.golden", out)
 }
 
-func TestAEResFromBytes(t *testing.T) {
+func TestAEResDecode(t *testing.T) {
 	aer := rpc.AppendEntriesRes{
 		Term:    12,
 		Success: false,
 	}
 
-	out := aer.ToBytes()
+	out := aer.Encode()
 
-	golden := getBytesFromGolden(t, "AEResFromBytes.golden", out)
-	aerOut := rpc.ToAppendEntriesRes(golden)
+	golden := getBytesFromGolden(t, "AEResDecode.golden", out)
+	aerOut := rpc.DecodeAppendEntriesRes(golden)
 
 	if diff := cmp.Diff(aer, *aerOut); diff != "" {
 		t.Fatalf("AERes mismatch (-want +got):\n%s", diff)
@@ -95,14 +137,14 @@ func TestAEResByteLayoutSync(t *testing.T) {
 		Success: true,
 	}
 
-	out := aer.ToBytes()
-	aerOut := rpc.ToAppendEntriesRes(out)
+	out := aer.Encode()
+	aerOut := rpc.DecodeAppendEntriesRes(out)
 	if diff := cmp.Diff(aer, *aerOut); diff != "" {
 		t.Fatalf("AERes byte layout mismatch, (-want +got):\n%s", diff)
 	}
 }
 
-func TestRVReqToBytes(t *testing.T) {
+func TestRVReqEncode(t *testing.T) {
 	rvr := rpc.RequestVoteReq{
 		Term:         13,
 		CandidateId:  14,
@@ -110,11 +152,11 @@ func TestRVReqToBytes(t *testing.T) {
 		LastLogTerm:  16,
 	}
 
-	out := rvr.ToBytes()
-	cmpBytesWithGolden(t, "RVReqToBytes.golden", out)
+	out := rvr.Encode()
+	cmpBytesWithGolden(t, "RVReqEncode.golden", out)
 }
 
-func TestRVReqFromBytes(t *testing.T) {
+func TestRVReqDecode(t *testing.T) {
 	rvr := rpc.RequestVoteReq{
 		Term:         17,
 		CandidateId:  18,
@@ -122,10 +164,10 @@ func TestRVReqFromBytes(t *testing.T) {
 		LastLogTerm:  20,
 	}
 
-	out := rvr.ToBytes()
+	out := rvr.Encode()
 
-	golden := getBytesFromGolden(t, "RVReqFromBytes.golden", out)
-	rvrOut := rpc.ToRequestVoteReq(golden)
+	golden := getBytesFromGolden(t, "RVReqDecode.golden", out)
+	rvrOut := rpc.DecodeRequestVoteReq(golden)
 
 	if diff := cmp.Diff(rvr, *rvrOut); diff != "" {
 		t.Fatalf("RVReq mismatch (-want +got):\n%s", diff)
@@ -140,33 +182,33 @@ func TestRVReqByteLayoutSync(t *testing.T) {
 		LastLogTerm:  24,
 	}
 
-	out := rvr.ToBytes()
-	rvrOut := rpc.ToRequestVoteReq(out)
+	out := rvr.Encode()
+	rvrOut := rpc.DecodeRequestVoteReq(out)
 	if diff := cmp.Diff(rvr, *rvrOut); diff != "" {
 		t.Fatalf("RVReq byte layout mismatch, (-want +got):\n%s", diff)
 	}
 }
 
-func TestRVResToBytes(t *testing.T) {
+func TestRVResEncode(t *testing.T) {
 	rvr := rpc.RequestVoteRes{
 		Term:        21,
 		VoteGranted: true,
 	}
 
-	out := rvr.ToBytes()
-	cmpBytesWithGolden(t, "RVResToBytes.golden", out)
+	out := rvr.Encode()
+	cmpBytesWithGolden(t, "RVResEncode.golden", out)
 }
 
-func TestRVResFromBytes(t *testing.T) {
+func TestRVResDecode(t *testing.T) {
 	rvr := rpc.RequestVoteRes{
 		Term:        22,
 		VoteGranted: false,
 	}
 
-	out := rvr.ToBytes()
+	out := rvr.Encode()
 
-	golden := getBytesFromGolden(t, "RVResFromBytes.golden", out)
-	rvrOut := rpc.ToRequestVoteRes(golden)
+	golden := getBytesFromGolden(t, "RVResDecode.golden", out)
+	rvrOut := rpc.DecodeRequestVoteRes(golden)
 
 	if diff := cmp.Diff(rvr, *rvrOut); diff != "" {
 		t.Fatalf("RVRes mismatch (-want +got):\n%s", diff)
@@ -179,8 +221,8 @@ func TestRVResByteLayoutSync(t *testing.T) {
 		VoteGranted: true,
 	}
 
-	out := rvr.ToBytes()
-	rvrOut := rpc.ToRequestVoteRes(out)
+	out := rvr.Encode()
+	rvrOut := rpc.DecodeRequestVoteRes(out)
 	if diff := cmp.Diff(rvr, *rvrOut); diff != "" {
 		t.Fatalf("RVRes byte layout mismatch, (-want +got):\n%s", diff)
 	}

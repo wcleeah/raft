@@ -2,6 +2,39 @@ package rpc
 
 import "encoding/binary"
 
+type RPCBase struct {
+	RPCType    uint
+	RelationId uint16
+	Payload    []byte
+}
+
+// byte layout:
+//
+//	RPCType -> 1 byte
+//	RelationId -> 2 byte
+//	Payload -> len
+func (rb *RPCBase) Encode() []byte {
+	out := make([]byte, 3+len(rb.Payload))
+
+	out[0] = byte(rb.RPCType)
+	binary.BigEndian.PutUint16(out[1:3], rb.RelationId)
+	copy(out[3:], rb.Payload)
+
+	return out
+}
+
+func DecodeRPCBase(bs []byte) *RPCBase {
+	rb := &RPCBase{
+		RPCType:    uint(bs[0]),
+		RelationId: binary.BigEndian.Uint16(bs[1:3]),
+		Payload:    make([]byte, len(bs[3:])),
+	}
+
+	copy(rb.Payload, bs[3:])
+
+	return rb
+}
+
 // byte layout:
 //
 //	Term -> 2 byte
@@ -19,7 +52,7 @@ type AppendEntriesReq struct {
 	Entries      []byte // up to the user to define how the entries are split, or not split, or each entry is just a byte. the rpc layer is only responsible for converting the incoming stream to a byte array
 }
 
-func (aer *AppendEntriesReq) ToBytes() []byte {
+func (aer *AppendEntriesReq) Encode() []byte {
 	out := make([]byte, 13+len(aer.Entries))
 
 	binary.BigEndian.PutUint16(out[0:2], aer.Term)
@@ -32,7 +65,7 @@ func (aer *AppendEntriesReq) ToBytes() []byte {
 	return out
 }
 
-func ToAppendEntriesReq(bs []byte) *AppendEntriesReq {
+func DecodeAppendEntriesReq(bs []byte) *AppendEntriesReq {
 	aer := &AppendEntriesReq{
 		Term:         binary.BigEndian.Uint16(bs[0:2]),
 		LeaderCommit: binary.BigEndian.Uint32(bs[2:6]),
@@ -59,7 +92,7 @@ type AppendEntriesRes struct {
 	Success bool
 }
 
-func (aer *AppendEntriesRes) ToBytes() []byte {
+func (aer *AppendEntriesRes) Encode() []byte {
 	out := make([]byte, 3)
 
 	binary.BigEndian.PutUint16(out[0:2], aer.Term)
@@ -68,7 +101,7 @@ func (aer *AppendEntriesRes) ToBytes() []byte {
 	return out
 }
 
-func ToAppendEntriesRes(bs []byte) *AppendEntriesRes {
+func DecodeAppendEntriesRes(bs []byte) *AppendEntriesRes {
 	return &AppendEntriesRes{
 		Term:    binary.BigEndian.Uint16(bs[0:2]),
 		Success: byteToBool(bs[2]),
@@ -88,7 +121,7 @@ type RequestVoteReq struct {
 	LastLogTerm  uint16
 }
 
-func (rvr *RequestVoteReq) ToBytes() []byte {
+func (rvr *RequestVoteReq) Encode() []byte {
 	out := make([]byte, 9)
 
 	binary.BigEndian.PutUint16(out[0:2], rvr.Term)
@@ -99,7 +132,7 @@ func (rvr *RequestVoteReq) ToBytes() []byte {
 	return out
 }
 
-func ToRequestVoteReq(bs []byte) *RequestVoteReq {
+func DecodeRequestVoteReq(bs []byte) *RequestVoteReq {
 	return &RequestVoteReq{
 		Term:         binary.BigEndian.Uint16(bs[0:2]),
 		CandidateId:  bs[2],
@@ -117,7 +150,7 @@ type RequestVoteRes struct {
 	VoteGranted bool
 }
 
-func (rvr *RequestVoteRes) ToBytes() []byte {
+func (rvr *RequestVoteRes) Encode() []byte {
 	out := make([]byte, 3)
 
 	binary.BigEndian.PutUint16(out[0:2], rvr.Term)
@@ -126,7 +159,7 @@ func (rvr *RequestVoteRes) ToBytes() []byte {
 	return out
 }
 
-func ToRequestVoteRes(bs []byte) *RequestVoteRes {
+func DecodeRequestVoteRes(bs []byte) *RequestVoteRes {
 	return &RequestVoteRes{
 		Term:        binary.BigEndian.Uint16(bs[0:2]),
 		VoteGranted: byteToBool(bs[2]),
