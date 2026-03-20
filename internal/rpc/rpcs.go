@@ -135,12 +135,12 @@ func ToRequestVoteRes(bs []byte) *RequestVoteRes {
 
 func boolToByte(v bool) byte {
 	if v {
-		return 0x08
+		return 0x01
 	}
 
 	return 0x00
 }
 
 func byteToBool(b byte) bool {
-	return b == 0x08
+	return b == 0x01
 }
