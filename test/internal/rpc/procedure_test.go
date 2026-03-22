@@ -13,7 +13,7 @@ import (
 var update = flag.Bool("update", false, "update golden files")
 
 func TestRPCBaseEncode(t *testing.T) {
-	rb := rpc.RPCBase{
+	rb := rpc.Frame{
 		RPCType:    1,
 		RelationId: 2,
 		Payload:    []byte("payload for rpc base"),
@@ -24,7 +24,7 @@ func TestRPCBaseEncode(t *testing.T) {
 }
 
 func TestRPCBaseDecode(t *testing.T) {
-	rb := rpc.RPCBase{
+	rb := rpc.Frame{
 		RPCType:    3,
 		RelationId: 4,
 		Payload:    []byte("payload from golden data"),
@@ -41,7 +41,7 @@ func TestRPCBaseDecode(t *testing.T) {
 }
 
 func TestRPCBaseByteLayoutSync(t *testing.T) {
-	rb := rpc.RPCBase{
+	rb := rpc.Frame{
 		RPCType:    5,
 		RelationId: 6,
 		Payload:    []byte("rpc base byte layout"),
@@ -60,7 +60,7 @@ func TestAEREncode(t *testing.T) {
 		LeaderCommit: 2,
 		PrevLogIndex: 3,
 		PrevLogTerm:  4,
-		LeaderId:     5,
+		LeaderId:     "leader-5",
 		Entries:      []byte("test i am a list of entries, i am also a string"),
 	}
 
@@ -74,7 +74,7 @@ func TestAERDecode(t *testing.T) {
 		LeaderCommit: 7,
 		PrevLogIndex: 8,
 		PrevLogTerm:  9,
-		LeaderId:     10,
+		LeaderId:     "leader-10",
 		Entries:      []byte("hello from the other sideeeeeeeeee ii"),
 	}
 
@@ -94,7 +94,7 @@ func TestAERByteLayoutSync(t *testing.T) {
 		LeaderCommit: 2,
 		PrevLogIndex: 3,
 		PrevLogTerm:  4,
-		LeaderId:     5,
+		LeaderId:     "leader-5",
 		Entries:      []byte("different different different"),
 	}
 
@@ -147,7 +147,7 @@ func TestAEResByteLayoutSync(t *testing.T) {
 func TestRVReqEncode(t *testing.T) {
 	rvr := rpc.RequestVoteReq{
 		Term:         13,
-		CandidateId:  14,
+		CandidateId:  "candidate-14",
 		LastLogIndex: 15,
 		LastLogTerm:  16,
 	}
@@ -159,7 +159,7 @@ func TestRVReqEncode(t *testing.T) {
 func TestRVReqDecode(t *testing.T) {
 	rvr := rpc.RequestVoteReq{
 		Term:         17,
-		CandidateId:  18,
+		CandidateId:  "candidate-18",
 		LastLogIndex: 19,
 		LastLogTerm:  20,
 	}
@@ -177,7 +177,7 @@ func TestRVReqDecode(t *testing.T) {
 func TestRVReqByteLayoutSync(t *testing.T) {
 	rvr := rpc.RequestVoteReq{
 		Term:         21,
-		CandidateId:  22,
+		CandidateId:  "candidate-22",
 		LastLogIndex: 23,
 		LastLogTerm:  24,
 	}

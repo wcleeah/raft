@@ -2,7 +2,7 @@ package rpc
 
 import "encoding/binary"
 
-type RPCBase struct {
+type Frame struct {
 	RPCType    uint
 	RelationId uint16
 	Payload    []byte
@@ -13,7 +13,7 @@ type RPCBase struct {
 //	RPCType -> 1 byte
 //	RelationId -> 2 byte
 //	Payload -> len
-func (rb *RPCBase) Encode() []byte {
+func (rb Frame) Encode() []byte {
 	out := make([]byte, 3+len(rb.Payload))
 
 	out[0] = byte(rb.RPCType)
@@ -23,8 +23,8 @@ func (rb *RPCBase) Encode() []byte {
 	return out
 }
 
-func DecodeRPCBase(bs []byte) *RPCBase {
-	rb := &RPCBase{
+func DecodeRPCBase(bs []byte) *Frame {
+	rb := &Frame{
 		RPCType:    uint(bs[0]),
 		RelationId: binary.BigEndian.Uint16(bs[1:3]),
 		Payload:    make([]byte, len(bs[3:])),
@@ -48,19 +48,21 @@ type AppendEntriesReq struct {
 	LeaderCommit uint32
 	PrevLogIndex uint32
 	PrevLogTerm  uint16
-	LeaderId     uint8
+	LeaderId     string
 	Entries      []byte // up to the user to define how the entries are split, or not split, or each entry is just a byte. the rpc layer is only responsible for converting the incoming stream to a byte array
 }
 
-func (aer *AppendEntriesReq) Encode() []byte {
-	out := make([]byte, 13+len(aer.Entries))
+func (aer AppendEntriesReq) Encode() []byte {
+	leaderIdInBytes := []byte(aer.LeaderId)
+	out := make([]byte, 14+len(leaderIdInBytes)+len(aer.Entries))
 
 	binary.BigEndian.PutUint16(out[0:2], aer.Term)
 	binary.BigEndian.PutUint32(out[2:6], aer.LeaderCommit)
 	binary.BigEndian.PutUint32(out[6:10], aer.PrevLogIndex)
 	binary.BigEndian.PutUint16(out[10:12], aer.PrevLogTerm)
-	out[12] = aer.LeaderId
-	copy(out[13:], aer.Entries)
+	binary.BigEndian.PutUint16(out[12:14], uint16(len(leaderIdInBytes)))
+	copy(out[14:], leaderIdInBytes)
+	copy(out[14+len(leaderIdInBytes):], aer.Entries)
 
 	return out
 }
@@ -71,14 +73,16 @@ func DecodeAppendEntriesReq(bs []byte) *AppendEntriesReq {
 		LeaderCommit: binary.BigEndian.Uint32(bs[2:6]),
 		PrevLogIndex: binary.BigEndian.Uint32(bs[6:10]),
 		PrevLogTerm:  binary.BigEndian.Uint16(bs[10:12]),
-		LeaderId:     bs[12],
-		Entries:      make([]byte, len(bs[13:])),
 	}
+
+	leaderIdLen := binary.BigEndian.Uint16(bs[12:14])
+	aer.LeaderId = string(bs[14 : 14+leaderIdLen])
+	aer.Entries = make([]byte, len(bs[14+leaderIdLen:]))
 
 	// The copy path is intentional:
 	// - Directly assigning the slice view keeps the underlying array alive, and risk unexpected alias problem
 	// - This does incur an extra copy, but as if any performance optimization guide will say, only optimise when it is actually the problem
-	copy(aer.Entries, bs[13:])
+	copy(aer.Entries, bs[14+leaderIdLen:])
 
 	return aer
 }
@@ -92,7 +96,7 @@ type AppendEntriesRes struct {
 	Success bool
 }
 
-func (aer *AppendEntriesRes) Encode() []byte {
+func (aer AppendEntriesRes) Encode() []byte {
 	out := make([]byte, 3)
 
 	binary.BigEndian.PutUint16(out[0:2], aer.Term)
@@ -111,23 +115,24 @@ func DecodeAppendEntriesRes(bs []byte) *AppendEntriesRes {
 // byte layout:
 //
 //	Term -> 2 byte
-//	CandidateId -> 1 byte
 //	LastLogIndex -> 4 byte
 //	LastLogTerm -> 2 byte
+//	CandidateId -> 1 byte
 type RequestVoteReq struct {
 	Term         uint16
-	CandidateId  uint8
 	LastLogIndex uint32
 	LastLogTerm  uint16
+	CandidateId  string
 }
 
-func (rvr *RequestVoteReq) Encode() []byte {
-	out := make([]byte, 9)
+func (rvr RequestVoteReq) Encode() []byte {
+	candidateIdInBytes := []byte(rvr.CandidateId)
+	out := make([]byte, 8+len(candidateIdInBytes))
 
 	binary.BigEndian.PutUint16(out[0:2], rvr.Term)
-	out[2] = rvr.CandidateId
-	binary.BigEndian.PutUint32(out[3:7], rvr.LastLogIndex)
-	binary.BigEndian.PutUint16(out[7:9], rvr.LastLogTerm)
+	binary.BigEndian.PutUint32(out[2:6], rvr.LastLogIndex)
+	binary.BigEndian.PutUint16(out[6:8], rvr.LastLogTerm)
+	copy(out[8:], candidateIdInBytes)
 
 	return out
 }
@@ -135,9 +140,9 @@ func (rvr *RequestVoteReq) Encode() []byte {
 func DecodeRequestVoteReq(bs []byte) *RequestVoteReq {
 	return &RequestVoteReq{
 		Term:         binary.BigEndian.Uint16(bs[0:2]),
-		CandidateId:  bs[2],
-		LastLogIndex: binary.BigEndian.Uint32(bs[3:7]),
-		LastLogTerm:  binary.BigEndian.Uint16(bs[7:9]),
+		LastLogIndex: binary.BigEndian.Uint32(bs[2:6]),
+		LastLogTerm:  binary.BigEndian.Uint16(bs[6:8]),
+		CandidateId:  string(bs[8:]),
 	}
 }
 
@@ -150,7 +155,7 @@ type RequestVoteRes struct {
 	VoteGranted bool
 }
 
-func (rvr *RequestVoteRes) Encode() []byte {
+func (rvr RequestVoteRes) Encode() []byte {
 	out := make([]byte, 3)
 
 	binary.BigEndian.PutUint16(out[0:2], rvr.Term)
