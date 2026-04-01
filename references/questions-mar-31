@@ -1,0 +1,5 @@
+1. Do followers that voted for a candidate stays at follower even if the election restarts? (note: since if a follower voted, it will not care about election / heartbeat timeout)
+2. When exactly does currentTerm in a node update, as far as i understand, these are the timings, any other possibility?
+  - AppendEntries
+  - Switch role to candidate
+3. I think i am right, but does current term get incremented every time a split vote happened and election restarts?
