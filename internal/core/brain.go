@@ -2,6 +2,7 @@ package core
 
 import (
 	"log/slog"
+	"sync"
 
 	"com.lwc.raft/internal/rpc"
 )
@@ -31,6 +32,8 @@ type BrainConfig struct {
 }
 
 type Brain struct {
+	entryMu sync.Mutex
+
 	entries      AppendEntries
 	l            *slog.Logger
 	raftState    *RaftState
@@ -66,13 +69,17 @@ func (b *Brain) HandleRPC(id string, frame *rpc.Frame) (rpc.RpcPayload, error) {
 		b.HandleVoteRequest(id, rpc.DecodeRequestVoteReq(frame.Payload))
 	case rpc.RPC_TYPE_REQUEST_VOTE_RES:
 		b.HandleVoteResult(id, rpc.DecodeRequestVoteRes(frame.Payload))
+	case rpc.RPC_TYPE_APPEND_ENTRIES_REQ:
+		b.HandleAppendEntriesRequest(id, rpc.DecodeAppendEntriesReq(frame.Payload))
+	case rpc.RPC_TYPE_APPEND_ENTRIES_RES:
+		b.HandleAppendEntriesResult(id, rpc.DecodeAppendEntriesRes(frame.Payload))
 	}
 
 	return nil, nil
 }
 
 func (b *Brain) HandleVoteRequest(id string, req *rpc.RequestVoteReq) *rpc.RequestVoteRes {
-	idx, log := b.entries.PrevLog()
+	idx, log := b.entries.LatestLog()
 	if req.LastLogTerm < log.Term {
 		return &rpc.RequestVoteRes{
 			VoteGranted: false,
@@ -103,6 +110,44 @@ func (b *Brain) HandleVoteResult(id string, res *rpc.RequestVoteRes) {
 	b.raftState.GotVote(res.VoteGranted, res.Term, uint32(len(b.fellows)/2))
 }
 
+func (b *Brain) HandleAppendEntriesRequest(id string, req *rpc.AppendEntriesReq) *rpc.AppendEntriesRes {
+	if req.Term < b.raftState.Term() {
+		return &rpc.AppendEntriesRes{
+			Term:    b.raftState.Term(),
+			Success: false,
+		}
+	}
+	log, err := b.entries.Get(req.PrevLogIndex)
+	if err != nil {
+		return &rpc.AppendEntriesRes{
+			Term:    b.raftState.Term(),
+			Success: false,
+		}
+	}
+	if log.Term != req.PrevLogTerm {
+		return &rpc.AppendEntriesRes{
+			Term:    b.raftState.Term(),
+			Success: false,
+		}
+	}
+
+	b.entryMu.Lock()
+	defer b.entryMu.Unlock()
+
+	b.entries.Replicate(req.Entries, req.PrevLogIndex+1)
+	latestLogIdx, _ := b.entries.LatestLog()
+	b.raftState.GotAEReq(req.LeaderId, req.Term, min(latestLogIdx, req.LeaderCommit))
+
+	return &rpc.AppendEntriesRes{
+		Term:    b.raftState.Term(),
+		Success: true,
+	}
+}
+
+func (b *Brain) HandleAppendEntriesResult(id string, res *rpc.AppendEntriesRes) {
+	b.raftState.GotAERes(id, res.Success, res.Term)
+}
+
 func (b *Brain) HandleStateEvent() {
 	for event := range b.raftState.eventCh {
 		switch event {
@@ -115,6 +160,8 @@ func (b *Brain) HandleStateEvent() {
 			case RAFT_ROLE_LEADER:
 				b.switchToLeader()
 			}
+		case RAFT_STATE_EVENT_COMMIT_IDX_CHANGE:
+			b.applyState()
 		}
 	}
 }
@@ -136,24 +183,50 @@ func (b *Brain) switchToLeader() {
 	b.deps.ElectionTimer.Stop()
 	b.deps.WaitForElectionTimer.Stop()
 	b.deps.ElectionTimeoutTimer.Stop()
+
+	latestLogIdx, _ := b.entries.LatestLog()
+	err := b.raftState.InitAsLeader(latestLogIdx)
+	if err != nil {
+		return
+	}
+
 	go b.sendHeartbeat()
+}
+
+func (b *Brain) applyState() {
+	b.entryMu.Lock()
+	defer b.entryMu.Unlock()
+
+	commitIdx := b.raftState.CommitIdx()
+	aes := b.entries.ApplyAll(commitIdx)
+
+	for _, ae := range aes {
+		b.stateMachine.Act(ae.Action, ae.CounterDelta)
+	}
 }
 
 func (b *Brain) sendHeartbeat() {
 Outer:
 	for {
-		lastLogIndex, lastLog := b.entries.PrevLog()
-		commitIdx := b.entries.CommitIdx()
+		commitIdx := b.raftState.CommitIdx()
 		term := b.raftState.Term()
 		for _, fellow := range b.fellows {
-			entries := b.entries.GetBSAfter(int(b.raftState.NextIndex(fellow.Id)))
+			nextIndex := b.raftState.NextIndex(fellow.Id)
+			prevLogIdx := nextIndex
+			if prevLogIdx != 0 {
+				prevLogIdx--
+			}
+			prevLog, err := b.entries.Get(prevLogIdx)
+			if err != nil {
+				continue
+			}
 			b.deps.Transport.Send(fellow.Id, &rpc.AppendEntriesReq{
 				Term:         term,
 				LeaderCommit: commitIdx,
-				PrevLogIndex: uint32(lastLogIndex),
-				PrevLogTerm:  lastLog.Term,
+				PrevLogIndex: prevLogIdx,
+				PrevLogTerm:  prevLog.Term,
 				LeaderId:     b.id,
-				Entries:      entries,
+				Entries:      b.entries.GetBSAfter(prevLogIdx),
 			})
 		}
 
@@ -197,7 +270,7 @@ func (b *Brain) ElectionLoop() {
 			return
 		}
 
-		lastLogIndex, lastLog := b.entries.PrevLog()
+		lastLogIndex, lastLog := b.entries.LatestLog()
 		b.deps.Transport.Boardcast(&rpc.RequestVoteReq{
 			Term:         b.raftState.Term(),
 			CandidateId:  b.id,

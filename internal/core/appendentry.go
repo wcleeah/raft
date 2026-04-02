@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/binary"
+	"errors"
 	"sync"
 )
 
@@ -35,41 +36,29 @@ func (ae *AppendEntry) Restore(ss []byte) {
 type AppendEntries struct {
 	mu             sync.RWMutex
 	entries        []AppendEntry
-	prevLogIdx     uint32
-	commitIdx      uint32
+	latestLogIdx   uint32
 	lastAppliedIdx uint32
 	store          Store
 }
 
 func NewAppendEntries(store Store) *AppendEntries {
 	return &AppendEntries{
-		entries: make([]AppendEntry, 0),
+		entries: make([]AppendEntry, 1),
 		store:   store,
 	}
 }
 
-func (ae *AppendEntries) Append(entry AppendEntry) {
+func (ae *AppendEntries) Replicate(bs []byte, after uint32) {
 	ae.mu.Lock()
 	defer ae.mu.Unlock()
 
-	ae.entries = append(ae.entries, entry)
-	ae.prevLogIdx++
-	for {
-		ok := ae.store.Save(entry)
-		if ok {
-			break
-		}
-	}
-}
-
-func (ae *AppendEntries) Commit(idx int) {
-	ae.mu.Lock()
-	defer ae.mu.Unlock()
-	if idx >= len(ae.entries) {
+	newEntries := ae.decode(bs)
+	if after > ae.latestLogIdx {
+		ae.entries = append(ae.entries, newEntries...)
 		return
 	}
 
-	ae.commitIdx = uint32(idx)
+	ae.entries = append(ae.entries[:after], newEntries...)
 }
 
 func (ae *AppendEntries) ApplyNext() AppendEntry {
@@ -80,47 +69,28 @@ func (ae *AppendEntries) ApplyNext() AppendEntry {
 	return ae.entries[ae.lastAppliedIdx]
 }
 
-func (ae *AppendEntries) ApplyAll() []AppendEntry {
-	ae.mu.RLock()
-	defer ae.mu.RUnlock()
-	res := make([]AppendEntry, ae.commitIdx-ae.lastAppliedIdx)
+func (ae *AppendEntries) ApplyAll(commitIdx uint32) []AppendEntry {
+	ae.mu.Lock()
+	defer ae.mu.Unlock()
+	if commitIdx < ae.lastAppliedIdx {
+		return []AppendEntry{}
+	}
+	if commitIdx >= uint32(len(ae.entries)) {
+		panic("Idx overflow")
+	}
+	res := make([]AppendEntry, commitIdx-ae.lastAppliedIdx)
 
-	copy(res, ae.entries[ae.lastAppliedIdx+1:ae.commitIdx+1])
-	ae.lastAppliedIdx = ae.commitIdx
+	copy(res, ae.entries[ae.lastAppliedIdx+1:commitIdx+1])
+	ae.lastAppliedIdx = commitIdx
 
 	return res
 }
 
-func (ae *AppendEntries) CommitIdx() uint32 {
-	return ae.commitIdx
-}
-
-func (ae *AppendEntries) LastAppliedIndex() uint32 {
+func (ae *AppendEntries) LatestLog() (uint32, AppendEntry) {
 	ae.mu.RLock()
 	defer ae.mu.RUnlock()
 
-	return ae.lastAppliedIdx
-}
-
-func (ae *AppendEntries) PrevLog() (uint32, AppendEntry) {
-	ae.mu.RLock()
-	defer ae.mu.RUnlock()
-
-	return ae.prevLogIdx, ae.entries[ae.prevLogIdx]
-}
-
-func (ae *AppendEntries) Snapshot() []byte {
-	ae.mu.RLock()
-	defer ae.mu.RUnlock()
-
-	ss := make([]byte, AE_SNAPSHOT_BS_LEN*len(ae.entries))
-
-	for i, entry := range ae.entries {
-		start := i * AE_SNAPSHOT_BS_LEN
-		copy(ss[start:start+AE_SNAPSHOT_BS_LEN], entry.Snapshot())
-	}
-
-	return ss
+	return ae.latestLogIdx, ae.entries[ae.latestLogIdx]
 }
 
 func (ae *AppendEntries) Restore() {
@@ -128,42 +98,26 @@ func (ae *AppendEntries) Restore() {
 	defer ae.mu.Lock()
 
 	ss := ae.store.Restore()
-	ae.entries = make([]AppendEntry, len(ss)/AE_SNAPSHOT_BS_LEN)
-
-	start := 0
-	idx := 0
-	for start+AE_SNAPSHOT_BS_LEN < len(ss) {
-		entry := &AppendEntry{}
-		entry.Restore(ss[start : start+AE_SNAPSHOT_BS_LEN])
-		ae.entries[idx] = *entry
-		idx++
-		start += AE_SNAPSHOT_BS_LEN
+	if ae.entries == nil {
+		ae.entries = make([]AppendEntry, 1)
 	}
-	if idx == 0 {
-		return
-	}
-
-	ae.commitIdx = uint32(idx - 1)
+	ae.entries = append(ae.entries, ae.decode(ss)...)
 }
 
-func (ae *AppendEntries) GetAfter(idx int) []AppendEntry {
+func (ae *AppendEntries) Get(idx uint32) (AppendEntry, error) {
 	ae.mu.RLock()
 	defer ae.mu.RUnlock()
-	if idx >= len(ae.entries) {
-		return []AppendEntry{}
+	if idx >= uint32(len(ae.entries)) {
+		return AppendEntry{}, errors.New("Idx overflow")
 	}
 
-	view := ae.entries[idx:]
-	res := make([]AppendEntry, len(view))
-	copy(res, view)
-
-	return res
+	return ae.entries[idx], nil
 }
 
-func (ae *AppendEntries) GetBSAfter(idx int) []byte {
+func (ae *AppendEntries) GetBSAfter(idx uint32) []byte {
 	ae.mu.RLock()
 	defer ae.mu.RUnlock()
-	if idx >= len(ae.entries) {
+	if idx >= uint32(len(ae.entries)) {
 		return []byte{}
 	}
 
@@ -175,4 +129,21 @@ func (ae *AppendEntries) GetBSAfter(idx int) []byte {
 	}
 
 	return res
+}
+
+func (ae *AppendEntries) decode(bs []byte) []AppendEntry {
+	entries := make([]AppendEntry, len(bs)/AE_SNAPSHOT_BS_LEN)
+
+	start := 0
+	idx := 0
+	for start+AE_SNAPSHOT_BS_LEN < len(bs) {
+		entry := &AppendEntry{}
+		entry.Restore(bs[start : start+AE_SNAPSHOT_BS_LEN])
+		ae.entries[idx] = *entry
+		idx++
+		ae.latestLogIdx++
+		start += AE_SNAPSHOT_BS_LEN
+	}
+
+	return entries
 }
