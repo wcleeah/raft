@@ -34,25 +34,27 @@ type BrainConfig struct {
 type Brain struct {
 	entryMu sync.Mutex
 
-	entries      AppendEntries
-	l            *slog.Logger
-	raftState    *RaftState
-	stateMachine *StateMachine
-	deps         *BrainDeps
-	quromCout    int
-	id           string
-	fellows      []*Fellow
+	entries        *AppendEntriesStore
+	l              *slog.Logger
+	raftState      *RaftState
+	stateMachine   *StateMachine
+	deps           *BrainDeps
+	// majority is larger than this threshold
+	quromThreshold uint32
+	id             string
+	fellows        []*Fellow
 }
 
 func NewBrain(l *slog.Logger, deps *BrainDeps, cfg *BrainConfig) *Brain {
 	return &Brain{
-		entries:      *NewAppendEntries(deps.EntriesStore),
-		l:            l,
-		raftState:    NewRaftState(),
-		stateMachine: &StateMachine{},
-		deps:         deps,
-		id:           cfg.SelfId,
-		fellows:      cfg.Fellows,
+		entries:        NewAppendEntriesStore(deps.EntriesStore),
+		l:              l,
+		raftState:      NewRaftState(),
+		stateMachine:   &StateMachine{},
+		deps:           deps,
+		id:             cfg.SelfId,
+		fellows:        cfg.Fellows,
+		quromThreshold: uint32(len(cfg.Fellows) / 2),
 	}
 }
 
@@ -63,7 +65,7 @@ func (b *Brain) Start() {
 	b.raftState.UpdateRole(RAFT_ROLE_FOLLOWER)
 }
 
-func (b *Brain) HandleRPC(id string, frame *rpc.Frame) (rpc.RpcPayload, error) {
+func (b *Brain) HandleRPC(id string, frame rpc.Frame, relatedReqFrame rpc.Frame) (rpc.RpcPayload, error) {
 	switch frame.RPCType {
 	case rpc.RPC_TYPE_REQUEST_VOTE_REQ:
 		b.HandleVoteRequest(id, rpc.DecodeRequestVoteReq(frame.Payload))
@@ -72,7 +74,7 @@ func (b *Brain) HandleRPC(id string, frame *rpc.Frame) (rpc.RpcPayload, error) {
 	case rpc.RPC_TYPE_APPEND_ENTRIES_REQ:
 		b.HandleAppendEntriesRequest(id, rpc.DecodeAppendEntriesReq(frame.Payload))
 	case rpc.RPC_TYPE_APPEND_ENTRIES_RES:
-		b.HandleAppendEntriesResult(id, rpc.DecodeAppendEntriesRes(frame.Payload))
+		b.HandleAppendEntriesResult(id, rpc.DecodeAppendEntriesRes(frame.Payload), rpc.DecodeAppendEntriesReq(relatedReqFrame.Payload))
 	}
 
 	return nil, nil
@@ -107,7 +109,7 @@ func (b *Brain) HandleVoteRequest(id string, req *rpc.RequestVoteReq) *rpc.Reque
 }
 
 func (b *Brain) HandleVoteResult(id string, res *rpc.RequestVoteRes) {
-	b.raftState.GotVote(res.VoteGranted, res.Term, uint32(len(b.fellows)/2))
+	b.raftState.GotVote(res.VoteGranted, res.Term, b.quromThreshold)
 }
 
 func (b *Brain) HandleAppendEntriesRequest(id string, req *rpc.AppendEntriesReq) *rpc.AppendEntriesRes {
@@ -117,26 +119,16 @@ func (b *Brain) HandleAppendEntriesRequest(id string, req *rpc.AppendEntriesReq)
 			Success: false,
 		}
 	}
-	log, err := b.entries.Get(req.PrevLogIndex)
+
+	latestLogIdx, err := b.entries.Replicate(req.Entries, req.PrevLogIndex, req.PrevLogTerm)
 	if err != nil {
 		return &rpc.AppendEntriesRes{
 			Term:    b.raftState.Term(),
 			Success: false,
 		}
 	}
-	if log.Term != req.PrevLogTerm {
-		return &rpc.AppendEntriesRes{
-			Term:    b.raftState.Term(),
-			Success: false,
-		}
-	}
 
-	b.entryMu.Lock()
-	defer b.entryMu.Unlock()
-
-	b.entries.Replicate(req.Entries, req.PrevLogIndex+1)
-	latestLogIdx, _ := b.entries.LatestLog()
-	b.raftState.GotAEReq(req.LeaderId, req.Term, min(latestLogIdx, req.LeaderCommit))
+	b.raftState.GotAEReq(req.LeaderId, req.Term, req.LeaderCommit, latestLogIdx)
 
 	return &rpc.AppendEntriesRes{
 		Term:    b.raftState.Term(),
@@ -144,8 +136,10 @@ func (b *Brain) HandleAppendEntriesRequest(id string, req *rpc.AppendEntriesReq)
 	}
 }
 
-func (b *Brain) HandleAppendEntriesResult(id string, res *rpc.AppendEntriesRes) {
-	b.raftState.GotAERes(id, res.Success, res.Term)
+func (b *Brain) HandleAppendEntriesResult(id string, res *rpc.AppendEntriesRes, relatedReq *rpc.AppendEntriesReq) {
+	entries := DecodeAppendEntries(relatedReq.Entries)
+
+	b.raftState.GotAERes(id, res.Success, res.Term, relatedReq.PrevLogIndex+entries.Len(), b.quromThreshold)
 }
 
 func (b *Brain) HandleStateEvent() {
@@ -220,13 +214,14 @@ Outer:
 			if err != nil {
 				continue
 			}
+
 			b.deps.Transport.Send(fellow.Id, &rpc.AppendEntriesReq{
 				Term:         term,
 				LeaderCommit: commitIdx,
 				PrevLogIndex: prevLogIdx,
 				PrevLogTerm:  prevLog.Term,
 				LeaderId:     b.id,
-				Entries:      b.entries.GetBSAfter(prevLogIdx),
+				Entries:      b.entries.GetHeartbeatEntries(nextIndex).Encode(),
 			})
 		}
 
@@ -274,7 +269,7 @@ func (b *Brain) ElectionLoop() {
 		b.deps.Transport.Boardcast(&rpc.RequestVoteReq{
 			Term:         b.raftState.Term(),
 			CandidateId:  b.id,
-			LastLogIndex: uint32(lastLogIndex),
+			LastLogIndex: lastLogIndex,
 			LastLogTerm:  lastLog.Term,
 		})
 

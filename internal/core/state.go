@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"slices"
 	"sync"
 )
 
@@ -27,10 +28,13 @@ type RaftState struct {
 	term     uint32
 	role     RaftRole
 	leaderId string
+	// majority of followers matched this index
 	commitIndex uint32
 
 	// leader related
+	// next heartbeat sent from this index
 	nextIndex   map[string]uint32
+	// known highest index to be replicated
 	matchIndex  map[string]uint32
 
 	// election related
@@ -52,33 +56,11 @@ func (rs *RaftState) Term() uint32 {
 	return rs.term
 }
 
-func (rs *RaftState) SetTerm(term uint32) {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-
-	rs.term = term
-}
-
-func (rs *RaftState) IncrementTerm() uint32 {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-
-	rs.term += 1
-	return rs.term
-}
-
 func (rs *RaftState) NextIndex(key string) uint32 {
 	rs.mu.RLock()
 	defer rs.mu.RUnlock()
 
 	return rs.nextIndex[key]
-}
-
-func (rs *RaftState) MatchIndex(key string) uint32 {
-	rs.mu.RLock()
-	defer rs.mu.RUnlock()
-
-	return rs.matchIndex[key]
 }
 
 func (rs *RaftState) CommitIdx() uint32 {
@@ -200,7 +182,7 @@ func (rs *RaftState) InitAsLeader(latestLogIdx uint32) error {
 	return nil
 }
 
-func (rs *RaftState) GotAEReq(id string, term uint32, newCommitIdx uint32) {
+func (rs *RaftState) GotAEReq(id string, term uint32, newCommitIdx uint32, lastLogIndex uint32) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
@@ -209,13 +191,13 @@ func (rs *RaftState) GotAEReq(id string, term uint32, newCommitIdx uint32) {
 		rs.updateRole(RAFT_ROLE_FOLLOWER)
 	}
 
-	if rs.commitIndex < newCommitIdx {
-		rs.updateCommitIdx(newCommitIdx)
+	if rs.commitIndex < max(lastLogIndex, newCommitIdx) {
+		rs.updateCommitIdx(max(lastLogIndex, newCommitIdx))
 	}
 
 }
 
-func (rs *RaftState) GotAERes(id string, success bool, term uint32) {
+func (rs *RaftState) GotAERes(id string, success bool, term uint32, matchIdx uint32, threshold uint32) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
@@ -226,19 +208,20 @@ func (rs *RaftState) GotAERes(id string, success bool, term uint32) {
 	}
 
 	if success {
-		rs.matchIndex[id] = rs.nextIndex[id]
-		rs.nextIndex[id]++
-		count := 0
-		for _, v := range rs.nextIndex {
-			if v >= rs.nextIndex[id] {
-				count++
-			}
+		rs.matchIndex[id] = max(matchIdx, rs.matchIndex[id])
+		rs.nextIndex[id] = rs.matchIndex[id] + 1
+		matchIndexes := make([]uint32, 0)
+		for _, v := range rs.matchIndex {
+			matchIndexes = append(matchIndexes, v)
 		}
-		if count > len(rs.nextIndex) / 2 && count > int(rs.commitIndex) {
-			rs.updateCommitIdx(rs.nextIndex[id])
+
+		slices.Sort(matchIndexes)
+		if rs.commitIndex < matchIndexes[threshold-1] {
+			rs.updateCommitIdx(matchIndexes[threshold-1])
 		}
 		return
 	}
+
 	if rs.nextIndex[id] > 0 {
 		rs.nextIndex[id]--
 	}
