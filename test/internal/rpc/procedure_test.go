@@ -228,6 +228,84 @@ func TestRVResByteLayoutSync(t *testing.T) {
 	}
 }
 
+func TestSAReqEncode(t *testing.T) {
+	sar := rpc.StateActionReq{
+		CounterDelta: 24,
+		Action:       25,
+	}
+
+	out := sar.Encode()
+	cmpBytesWithGolden(t, "SAReqEncode.golden", out)
+}
+
+func TestSAReqDecode(t *testing.T) {
+	sar := rpc.StateActionReq{
+		CounterDelta: 26,
+		Action:       27,
+	}
+
+	out := sar.Encode()
+
+	golden := getBytesFromGolden(t, "SAReqDecode.golden", out)
+	sarOut := rpc.DecodeStateActionReq(golden)
+
+	if diff := cmp.Diff(sar, *sarOut); diff != "" {
+		t.Fatalf("SAReq mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestSAReqByteLayoutSync(t *testing.T) {
+	sar := rpc.StateActionReq{
+		CounterDelta: 28,
+		Action:       29,
+	}
+
+	out := sar.Encode()
+	sarOut := rpc.DecodeStateActionReq(out)
+	if diff := cmp.Diff(sar, *sarOut); diff != "" {
+		t.Fatalf("SAReq byte layout mismatch, (-want +got):\n%s", diff)
+	}
+}
+
+func TestSAResEncode(t *testing.T) {
+	sar := rpc.StateActionRes{
+		Success:      true,
+		RedirectAddr: "127.0.0.1:8080",
+	}
+
+	out := sar.Encode()
+	cmpBytesWithGolden(t, "SAResEncode.golden", out)
+}
+
+func TestSAResDecode(t *testing.T) {
+	sar := rpc.StateActionRes{
+		Success:      false,
+		RedirectAddr: "raft-node-2.internal:9000",
+	}
+
+	out := sar.Encode()
+
+	golden := getBytesFromGolden(t, "SAResDecode.golden", out)
+	sarOut := rpc.DecodeStateActionRes(golden)
+
+	if diff := cmp.Diff(sar, *sarOut); diff != "" {
+		t.Fatalf("SARes mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestSAResByteLayoutSync(t *testing.T) {
+	sar := rpc.StateActionRes{
+		Success:      true,
+		RedirectAddr: "leader-redirect.example:1234",
+	}
+
+	out := sar.Encode()
+	sarOut := rpc.DecodeStateActionRes(out)
+	if diff := cmp.Diff(sar, *sarOut); diff != "" {
+		t.Fatalf("SARes byte layout mismatch, (-want +got):\n%s", diff)
+	}
+}
+
 func cmpBytesWithGolden(t *testing.T, path string, got []byte) {
 	t.Helper()
 	want := getBytesFromGolden(t, path, got)

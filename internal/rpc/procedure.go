@@ -175,6 +175,51 @@ func DecodeRequestVoteRes(bs []byte) *RequestVoteRes {
 	}
 }
 
+// byte layout:
+//
+//	CounterDelta -> 2 byte
+//	Action -> 4 byte
+type StateActionReq struct {
+	CounterDelta uint16
+	Action       uint32
+}
+
+func (rvr StateActionReq) Encode() []byte {
+	out := make([]byte, 6)
+
+	binary.BigEndian.PutUint16(out[0:2], rvr.CounterDelta)
+	binary.BigEndian.PutUint32(out[2:6], rvr.Action)
+
+	return out
+}
+
+func DecodeStateActionReq(bs []byte) *StateActionReq {
+	return &StateActionReq{
+		CounterDelta: binary.BigEndian.Uint16(bs[0:2]),
+		Action:       binary.BigEndian.Uint32(bs[2:6]),
+	}
+}
+
+type StateActionRes struct {
+	Success      bool
+	RedirectAddr string
+}
+
+func (rvr StateActionRes) Encode() []byte {
+	out := make([]byte, 1+len(rvr.RedirectAddr))
+
+	out[0] = boolToByte(rvr.Success)
+	copy(out[1:], []byte(rvr.RedirectAddr))
+
+	return out
+}
+
+func DecodeStateActionRes(bs []byte) *StateActionRes {
+	return &StateActionRes{
+		Success:      byteToBool(bs[0]),
+		RedirectAddr: string(bs[1:]),
+	}
+}
 func boolToByte(v bool) byte {
 	if v {
 		return 0x01
