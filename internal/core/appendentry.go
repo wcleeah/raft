@@ -103,6 +103,13 @@ func NewAppendEntriesStore(store Store) *AppendEntriesStore {
 	}
 }
 
+func (ae *AppendEntriesStore) Append(entry AppendEntry) {
+	ae.mu.Lock()
+	defer ae.mu.Unlock()
+
+	ae.entries = append(ae.entries, entry)
+}
+
 func (ae *AppendEntriesStore) Replicate(bs []byte, prevLogIndex uint32, prevLogTerm uint32) (uint32, error) {
 	ae.mu.Lock()
 	defer ae.mu.Unlock()

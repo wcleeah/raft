@@ -87,6 +87,13 @@ func (rs *RaftState) Role() RaftRole {
 	return rs.role
 }
 
+func (rs *RaftState) LeaderId() string {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+
+	return rs.leaderId
+}
+
 func (rs *RaftState) UpdateRole(role RaftRole) bool {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
@@ -262,6 +269,10 @@ func (rs *RaftState) GotAERes(id string, success bool, term uint32, matchIdx uin
 func (rs *RaftState) IncLeaderIndexes(id string) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
+
+	if rs.role != RAFT_ROLE_LEADER {
+		return
+	}
 
 	rs.matchIndex[id]++
 	rs.nextIndex[id]++

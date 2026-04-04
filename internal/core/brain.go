@@ -34,24 +34,24 @@ type BrainConfig struct {
 type Brain struct {
 	entryMu sync.Mutex
 
-	entries        *AppendEntriesStore
-	l              *slog.Logger
-	raftState      *RaftState
-	stateMachine   *StateMachine
-	deps           *BrainDeps
-	id             string
-	fellows        []*Fellow
+	entries      *AppendEntriesStore
+	l            *slog.Logger
+	raftState    *RaftState
+	stateMachine *StateMachine
+	deps         *BrainDeps
+	id           string
+	fellows      []*Fellow
 }
 
 func NewBrain(l *slog.Logger, deps *BrainDeps, cfg *BrainConfig) *Brain {
 	return &Brain{
-		entries:        NewAppendEntriesStore(deps.EntriesStore),
-		l:              l,
-		raftState:      &RaftState{},
-		stateMachine:   &StateMachine{},
-		deps:           deps,
-		id:             cfg.SelfId,
-		fellows:        cfg.Fellows,
+		entries:      NewAppendEntriesStore(deps.EntriesStore),
+		l:            l,
+		raftState:    &RaftState{},
+		stateMachine: &StateMachine{},
+		deps:         deps,
+		id:           cfg.SelfId,
+		fellows:      cfg.Fellows,
 	}
 }
 
@@ -74,11 +74,16 @@ func (b *Brain) Start() {
 func (b *Brain) HandleRPC(id string, frame rpc.Frame, relatedReqFrame rpc.Frame) (rpc.RpcPayload, error) {
 	switch frame.RPCType {
 	case rpc.RPC_TYPE_REQUEST_VOTE_REQ:
-		b.HandleVoteRequest(rpc.DecodeRequestVoteReq(frame.Payload))
+		res := b.HandleVoteRequest(rpc.DecodeRequestVoteReq(frame.Payload))
+		return res, nil
+	case rpc.RPC_TYPE_APPEND_ENTRIES_REQ:
+		res := b.HandleAppendEntriesRequest(id, rpc.DecodeAppendEntriesReq(frame.Payload))
+		return res, nil
+	case rpc.RPC_TYPE_STATE_ACTION_REQ:
+		res := b.HandleStateActionReq(rpc.DecodeStateActionReq(frame.Payload))
+		return res, nil
 	case rpc.RPC_TYPE_REQUEST_VOTE_RES:
 		b.HandleVoteResult(id, rpc.DecodeRequestVoteRes(frame.Payload))
-	case rpc.RPC_TYPE_APPEND_ENTRIES_REQ:
-		b.HandleAppendEntriesRequest(id, rpc.DecodeAppendEntriesReq(frame.Payload))
 	case rpc.RPC_TYPE_APPEND_ENTRIES_RES:
 		b.HandleAppendEntriesResult(id, rpc.DecodeAppendEntriesRes(frame.Payload), rpc.DecodeAppendEntriesReq(relatedReqFrame.Payload))
 	}
@@ -146,6 +151,27 @@ func (b *Brain) HandleAppendEntriesResult(id string, res *rpc.AppendEntriesRes, 
 	entries := DecodeAppendEntries(relatedReq.Entries)
 
 	b.raftState.GotAERes(id, res.Success, res.Term, relatedReq.PrevLogIndex+entries.Len())
+}
+
+func (b *Brain) HandleStateActionReq(req *rpc.StateActionReq) *rpc.StateActionRes {
+	if b.raftState.Role() != RAFT_ROLE_LEADER {
+		return &rpc.StateActionRes{
+			Success:      false,
+			RedirectAddr: b.raftState.LeaderId(),
+		}
+	}
+
+	b.entries.Append(AppendEntry{
+		Term:         b.raftState.Term(),
+		CounterDelta: req.CounterDelta,
+		Action:       req.Action,
+	})
+
+	b.raftState.IncLeaderIndexes(b.id)
+
+	return &rpc.StateActionRes{
+		Success: true,
+	}
 }
 
 func (b *Brain) HandleStateEvent() {
