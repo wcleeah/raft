@@ -231,7 +231,7 @@ func TestRVResByteLayoutSync(t *testing.T) {
 func TestSAReqEncode(t *testing.T) {
 	sar := rpc.StateActionReq{
 		CounterDelta: 24,
-		Action:       25,
+		Action:       uint8(25),
 	}
 
 	out := sar.Encode()
@@ -241,7 +241,7 @@ func TestSAReqEncode(t *testing.T) {
 func TestSAReqDecode(t *testing.T) {
 	sar := rpc.StateActionReq{
 		CounterDelta: 26,
-		Action:       27,
+		Action:       uint8(27),
 	}
 
 	out := sar.Encode()
@@ -257,7 +257,7 @@ func TestSAReqDecode(t *testing.T) {
 func TestSAReqByteLayoutSync(t *testing.T) {
 	sar := rpc.StateActionReq{
 		CounterDelta: 28,
-		Action:       29,
+		Action:       uint8(29),
 	}
 
 	out := sar.Encode()
