@@ -9,9 +9,9 @@ import (
 type RaftRole = uint
 
 const (
-	RAFT_ROLE_LEADER RaftRole = iota
-	RAFT_ROLE_FOLLOWER
+	RAFT_ROLE_FOLLOWER RaftRole = iota
 	RAFT_ROLE_CANDIDATE
+	RAFT_ROLE_LEADER
 )
 
 type RaftStateEvent = uint
@@ -25,28 +25,38 @@ type RaftState struct {
 	mu      sync.RWMutex
 	eventCh chan RaftStateEvent
 
-	term     uint32
-	role     RaftRole
-	leaderId string
-	// majority of followers matched this index
+	term      uint32
+	role      RaftRole
+	threshold uint32
+
+	// for leader: majority of followers matched this index
+	// for follower: min(leader's commit index, latest log index)
 	commitIndex uint32
+
+	// follower related
+	leaderId string
 
 	// leader related
 	// next heartbeat sent from this index
-	nextIndex   map[string]uint32
+	nextIndex map[string]uint32
 	// known highest index to be replicated
-	matchIndex  map[string]uint32
+	matchIndex map[string]uint32
 
-	// election related
+	// candidate / election related
 	votedFor     string
 	votedForTerm uint32
 	voteCount    uint32
 }
 
-func NewRaftState() *RaftState {
-	return &RaftState{
-		eventCh: make(chan RaftStateEvent, 1000),
+func (rs *RaftState) EventCh() <-chan RaftStateEvent {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+
+	if rs.eventCh == nil {
+		rs.eventCh = make(chan RaftStateEvent, 1000)
 	}
+
+	return rs.eventCh
 }
 
 func (rs *RaftState) Term() uint32 {
@@ -73,6 +83,7 @@ func (rs *RaftState) CommitIdx() uint32 {
 func (rs *RaftState) Role() RaftRole {
 	rs.mu.RLock()
 	defer rs.mu.RUnlock()
+
 	return rs.role
 }
 
@@ -104,15 +115,43 @@ func (rs *RaftState) StartElection(id string) error {
 		return errors.New("Not a candidate")
 	}
 
-	if rs.term+1 <= rs.votedForTerm {
-		return errors.New("Voted for higher term already")
-	}
 	rs.term++
 	rs.votedFor = id
 	rs.votedForTerm = rs.term
-	rs.voteCount = 0
+	rs.voteCount++
 
 	return nil
+}
+
+func (rs *RaftState) InitAsLeader(id string, latestLogIdx uint32) error {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	if rs.role != RAFT_ROLE_LEADER {
+		return errors.New("Not a leader")
+	}
+
+	rs.commitIndex = 0
+	for k := range rs.matchIndex {
+		if k == id {
+			rs.matchIndex[k] = latestLogIdx
+			continue
+		}
+		rs.matchIndex[k] = 0
+	}
+
+	for k := range rs.nextIndex {
+		rs.nextIndex[k] = latestLogIdx + 1
+	}
+
+	return nil
+}
+
+func (rs *RaftState) InitAsFollower() {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	rs.commitIndex = 0
 }
 
 func (rs *RaftState) Vote(candidateId string, term uint32) (uint32, error) {
@@ -123,24 +162,22 @@ func (rs *RaftState) Vote(candidateId string, term uint32) (uint32, error) {
 		return rs.term, errors.New("Current term is higher")
 	}
 
-	if rs.votedForTerm >= term {
-		return rs.term, errors.New("Voted for higher term")
-	}
-
-	if rs.votedFor != "" {
+	if rs.term == term && rs.votedFor != "" {
 		return rs.term, errors.New("Voted already")
 	}
 
 	rs.votedFor = candidateId
 	rs.votedForTerm = term
+	rs.term = term
 	rs.updateRole(RAFT_ROLE_FOLLOWER)
 
 	return rs.term, nil
 }
 
-func (rs *RaftState) GotVote(voteGranted bool, followerTerm uint32, threshold uint32) {
+func (rs *RaftState) GotVote(voteGranted bool, followerTerm uint32) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
+
 	if followerTerm > rs.term {
 		rs.term = followerTerm
 		rs.updateRole(RAFT_ROLE_FOLLOWER)
@@ -151,7 +188,7 @@ func (rs *RaftState) GotVote(voteGranted bool, followerTerm uint32, threshold ui
 	}
 
 	rs.voteCount++
-	if rs.voteCount > threshold {
+	if rs.voteCount >= rs.threshold {
 		rs.updateRole(RAFT_ROLE_LEADER)
 	}
 }
@@ -163,41 +200,29 @@ func (rs *RaftState) IsVoted() bool {
 	return rs.votedForTerm == rs.term && rs.votedFor != ""
 }
 
-func (rs *RaftState) InitAsLeader(latestLogIdx uint32) error {
-	rs.mu.Lock()
-	defer rs.mu.Unlock()
-
-	if rs.role != RAFT_ROLE_LEADER {
-		return errors.New("Not a leader")
-	}
-
-	rs.commitIndex = 0
-	for k := range rs.matchIndex {
-		rs.matchIndex[k] = 0
-	}
-	for k := range rs.nextIndex {
-		rs.nextIndex[k] = latestLogIdx + 1
-	}
-
-	return nil
-}
-
 func (rs *RaftState) GotAEReq(id string, term uint32, newCommitIdx uint32, lastLogIndex uint32) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
-	if term > rs.term && rs.role != RAFT_ROLE_FOLLOWER {
+	if term < rs.term {
+		return
+	}
+
+	if term > rs.term {
 		rs.term = term
 		rs.updateRole(RAFT_ROLE_FOLLOWER)
 	}
 
-	if rs.commitIndex < max(lastLogIndex, newCommitIdx) {
-		rs.updateCommitIdx(max(lastLogIndex, newCommitIdx))
+	rs.leaderId = id
+
+	if rs.commitIndex >= newCommitIdx {
+		return
 	}
 
+	rs.updateCommitIdx(min(newCommitIdx, lastLogIndex))
 }
 
-func (rs *RaftState) GotAERes(id string, success bool, term uint32, matchIdx uint32, threshold uint32) {
+func (rs *RaftState) GotAERes(id string, success bool, term uint32, matchIdx uint32) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
@@ -207,29 +232,89 @@ func (rs *RaftState) GotAERes(id string, success bool, term uint32, matchIdx uin
 		return
 	}
 
-	if success {
-		rs.matchIndex[id] = max(matchIdx, rs.matchIndex[id])
-		rs.nextIndex[id] = rs.matchIndex[id] + 1
-		matchIndexes := make([]uint32, 0)
-		for _, v := range rs.matchIndex {
-			matchIndexes = append(matchIndexes, v)
-		}
+	if rs.role != RAFT_ROLE_LEADER {
+		return
+	}
 
-		slices.Sort(matchIndexes)
-		if rs.commitIndex < matchIndexes[threshold-1] {
-			rs.updateCommitIdx(matchIndexes[threshold-1])
+	if !success {
+		if rs.nextIndex[id] > 0 {
+			rs.nextIndex[id]--
 		}
 		return
 	}
 
-	if rs.nextIndex[id] > 0 {
-		rs.nextIndex[id]--
+	rs.matchIndex[id] = max(matchIdx, rs.matchIndex[id])
+	rs.nextIndex[id] = rs.matchIndex[id] + 1
+
+	matchIndexes := make([]uint32, 0)
+	for _, v := range rs.matchIndex {
+		matchIndexes = append(matchIndexes, v)
 	}
 
+	slices.Sort(matchIndexes)
+
+	tIdx := rs.threshold - 1
+	if rs.commitIndex < matchIndexes[tIdx] {
+		rs.updateCommitIdx(matchIndexes[tIdx])
+	}
+}
+
+func (rs *RaftState) IncLeaderIndexes(id string) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	rs.matchIndex[id]++
+	rs.nextIndex[id]++
+}
+
+func (rs *RaftState) RegisterNode(id string) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	if rs.matchIndex == nil {
+		rs.matchIndex = make(map[string]uint32)
+	}
+
+	if rs.nextIndex == nil {
+		rs.nextIndex = make(map[string]uint32)
+	}
+
+	rs.nextIndex[id] = 0
+	rs.matchIndex[id] = 0
+
+	total := len(rs.nextIndex) + 1
+	rs.threshold = uint32(total / 2)
+	if total%2 == 1 {
+		rs.threshold++
+	}
+}
+
+func (rs *RaftState) ResetIndexes(nextIndex uint32) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	if rs.matchIndex == nil {
+		rs.matchIndex = make(map[string]uint32)
+	}
+
+	if rs.nextIndex == nil {
+		rs.nextIndex = make(map[string]uint32)
+	}
+
+	for k, _ := range rs.nextIndex {
+		rs.nextIndex[k] = nextIndex
+	}
+
+	for k, _ := range rs.matchIndex {
+		rs.matchIndex[k] = 0
+	}
 }
 
 func (rs *RaftState) updateRole(role uint) {
 	rs.role = role
+	if rs.eventCh == nil {
+		rs.eventCh = make(chan RaftStateEvent, 1000)
+	}
 	// might be a bad design, keeping it for now
 	// it potentially holds the lock for super long, or even causes dead lock
 	rs.eventCh <- RAFT_STATE_EVENT_ROLE_CHANGE
@@ -237,5 +322,8 @@ func (rs *RaftState) updateRole(role uint) {
 
 func (rs *RaftState) updateCommitIdx(commitIdx uint32) {
 	rs.commitIndex = commitIdx
+	if rs.eventCh == nil {
+		rs.eventCh = make(chan RaftStateEvent, 1000)
+	}
 	rs.eventCh <- RAFT_STATE_EVENT_COMMIT_IDX_CHANGE
 }

@@ -5,7 +5,7 @@ import (
 	"sync"
 )
 
-type StateAction = byte
+type StateAction = uint32 
 
 const (
 	STATE_ADD StateAction = iota

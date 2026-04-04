@@ -39,8 +39,6 @@ type Brain struct {
 	raftState      *RaftState
 	stateMachine   *StateMachine
 	deps           *BrainDeps
-	// majority is larger than this threshold
-	quromThreshold uint32
 	id             string
 	fellows        []*Fellow
 }
@@ -49,17 +47,25 @@ func NewBrain(l *slog.Logger, deps *BrainDeps, cfg *BrainConfig) *Brain {
 	return &Brain{
 		entries:        NewAppendEntriesStore(deps.EntriesStore),
 		l:              l,
-		raftState:      NewRaftState(),
+		raftState:      &RaftState{},
 		stateMachine:   &StateMachine{},
 		deps:           deps,
 		id:             cfg.SelfId,
 		fellows:        cfg.Fellows,
-		quromThreshold: uint32(len(cfg.Fellows) / 2),
 	}
 }
 
 func (b *Brain) Start() {
 	go b.HandleStateEvent()
+
+	// initiate connection for rpc request FROM this node and response for that request
+	go b.deps.Transport.Listen(b.HandleRPC)
+
+	// initiate connection for rpc request TO this node and response for that request
+	for _, fellow := range b.fellows {
+		go b.deps.Transport.RegisterPeer(fellow.Id, fellow.Addr, b.HandleRPC)
+		b.raftState.RegisterNode(fellow.Id)
+	}
 
 	b.entries.Restore()
 	b.raftState.UpdateRole(RAFT_ROLE_FOLLOWER)
@@ -68,7 +74,7 @@ func (b *Brain) Start() {
 func (b *Brain) HandleRPC(id string, frame rpc.Frame, relatedReqFrame rpc.Frame) (rpc.RpcPayload, error) {
 	switch frame.RPCType {
 	case rpc.RPC_TYPE_REQUEST_VOTE_REQ:
-		b.HandleVoteRequest(id, rpc.DecodeRequestVoteReq(frame.Payload))
+		b.HandleVoteRequest(rpc.DecodeRequestVoteReq(frame.Payload))
 	case rpc.RPC_TYPE_REQUEST_VOTE_RES:
 		b.HandleVoteResult(id, rpc.DecodeRequestVoteRes(frame.Payload))
 	case rpc.RPC_TYPE_APPEND_ENTRIES_REQ:
@@ -80,7 +86,7 @@ func (b *Brain) HandleRPC(id string, frame rpc.Frame, relatedReqFrame rpc.Frame)
 	return nil, nil
 }
 
-func (b *Brain) HandleVoteRequest(id string, req *rpc.RequestVoteReq) *rpc.RequestVoteRes {
+func (b *Brain) HandleVoteRequest(req *rpc.RequestVoteReq) *rpc.RequestVoteRes {
 	idx, log := b.entries.LatestLog()
 	if req.LastLogTerm < log.Term {
 		return &rpc.RequestVoteRes{
@@ -109,7 +115,7 @@ func (b *Brain) HandleVoteRequest(id string, req *rpc.RequestVoteReq) *rpc.Reque
 }
 
 func (b *Brain) HandleVoteResult(id string, res *rpc.RequestVoteRes) {
-	b.raftState.GotVote(res.VoteGranted, res.Term, b.quromThreshold)
+	b.raftState.GotVote(res.VoteGranted, res.Term)
 }
 
 func (b *Brain) HandleAppendEntriesRequest(id string, req *rpc.AppendEntriesReq) *rpc.AppendEntriesRes {
@@ -139,7 +145,7 @@ func (b *Brain) HandleAppendEntriesRequest(id string, req *rpc.AppendEntriesReq)
 func (b *Brain) HandleAppendEntriesResult(id string, res *rpc.AppendEntriesRes, relatedReq *rpc.AppendEntriesReq) {
 	entries := DecodeAppendEntries(relatedReq.Entries)
 
-	b.raftState.GotAERes(id, res.Success, res.Term, relatedReq.PrevLogIndex+entries.Len(), b.quromThreshold)
+	b.raftState.GotAERes(id, res.Success, res.Term, relatedReq.PrevLogIndex+entries.Len())
 }
 
 func (b *Brain) HandleStateEvent() {
@@ -179,7 +185,7 @@ func (b *Brain) switchToLeader() {
 	b.deps.ElectionTimeoutTimer.Stop()
 
 	latestLogIdx, _ := b.entries.LatestLog()
-	err := b.raftState.InitAsLeader(latestLogIdx)
+	err := b.raftState.InitAsLeader(b.id, latestLogIdx)
 	if err != nil {
 		return
 	}
