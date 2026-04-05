@@ -1,10 +1,11 @@
-package core
+package runtime
 
 import (
 	"log/slog"
 	"sync"
 
 	"com.lwc.raft/internal/rpc"
+	"com.lwc.raft/internal/core"
 )
 
 type Fellow struct {
@@ -14,16 +15,16 @@ type Fellow struct {
 
 type BrainDeps struct {
 	// Timer for candidate to restart an election after no one is elected
-	ElectionTimer Timer
+	ElectionTimer core.Timer
 	// Timer for candidate to wait before starting an election
-	WaitForElectionTimer Timer
+	WaitForElectionTimer core.Timer
 	// Timer for follower to determine leader is down and not sending AE heartbeat
-	ElectionTimeoutTimer Timer
+	ElectionTimeoutTimer core.Timer
 	// Timer for leader to send periodic AE heartbeat
-	HeartbeatTimer Timer
+	HeartbeatTimer core.Timer
 
-	EntriesStore Store
-	Transport    Transport
+	EntriesStore core.Store
+	Transport    core.Transport
 }
 
 type BrainConfig struct {
@@ -34,10 +35,10 @@ type BrainConfig struct {
 type Brain struct {
 	entryMu sync.Mutex
 
-	entries      *AppendEntriesStore
+	entries      *core.AppendEntriesStore
 	l            *slog.Logger
-	raftState    *RaftState
-	stateMachine *StateMachine
+	raftState    *core.RaftState
+	stateMachine *core.StateMachine
 	deps         *BrainDeps
 	id           string
 	fellows      []*Fellow
@@ -45,10 +46,10 @@ type Brain struct {
 
 func NewBrain(l *slog.Logger, deps *BrainDeps, cfg *BrainConfig) *Brain {
 	return &Brain{
-		entries:      NewAppendEntriesStore(deps.EntriesStore),
+		entries:      core.NewAppendEntriesStore(deps.EntriesStore),
 		l:            l,
-		raftState:    &RaftState{},
-		stateMachine: &StateMachine{},
+		raftState:    &core.RaftState{},
+		stateMachine: &core.StateMachine{},
 		deps:         deps,
 		id:           cfg.SelfId,
 		fellows:      cfg.Fellows,
@@ -56,42 +57,42 @@ func NewBrain(l *slog.Logger, deps *BrainDeps, cfg *BrainConfig) *Brain {
 }
 
 func (b *Brain) Start() {
-	go b.HandleStateEvent()
+	go b.handleStateEvent()
 
 	// initiate connection for rpc request FROM this node and response for that request
-	go b.deps.Transport.Listen(b.HandleRPC)
+	go b.deps.Transport.Listen(b.handleRPC)
 
 	// initiate connection for rpc request TO this node and response for that request
 	for _, fellow := range b.fellows {
-		go b.deps.Transport.RegisterPeer(fellow.Id, fellow.Addr, b.HandleRPC)
+		go b.deps.Transport.RegisterPeer(fellow.Id, fellow.Addr, b.handleRPC)
 		b.raftState.RegisterNode(fellow.Id)
 	}
 
 	b.entries.Restore()
-	b.raftState.UpdateRole(RAFT_ROLE_FOLLOWER)
+	b.raftState.UpdateRole(core.RAFT_ROLE_FOLLOWER)
 }
 
-func (b *Brain) HandleRPC(id string, frame rpc.Frame, relatedReqFrame rpc.Frame) (rpc.RpcPayload, error) {
+func (b *Brain) handleRPC(id string, frame rpc.Frame, relatedReqFrame rpc.Frame) (rpc.RpcPayload, error) {
 	switch frame.RPCType {
 	case rpc.RPC_TYPE_REQUEST_VOTE_REQ:
-		res := b.HandleVoteRequest(rpc.DecodeRequestVoteReq(frame.Payload))
+		res := b.handleVoteRequest(rpc.DecodeRequestVoteReq(frame.Payload))
 		return res, nil
 	case rpc.RPC_TYPE_APPEND_ENTRIES_REQ:
-		res := b.HandleAppendEntriesRequest(id, rpc.DecodeAppendEntriesReq(frame.Payload))
+		res := b.handleAppendEntriesRequest(id, rpc.DecodeAppendEntriesReq(frame.Payload))
 		return res, nil
 	case rpc.RPC_TYPE_STATE_ACTION_REQ:
-		res := b.HandleStateActionReq(rpc.DecodeStateActionReq(frame.Payload))
+		res := b.handleStateActionReq(rpc.DecodeStateActionReq(frame.Payload))
 		return res, nil
 	case rpc.RPC_TYPE_REQUEST_VOTE_RES:
-		b.HandleVoteResult(id, rpc.DecodeRequestVoteRes(frame.Payload))
+		b.handleVoteResult(id, rpc.DecodeRequestVoteRes(frame.Payload))
 	case rpc.RPC_TYPE_APPEND_ENTRIES_RES:
-		b.HandleAppendEntriesResult(id, rpc.DecodeAppendEntriesRes(frame.Payload), rpc.DecodeAppendEntriesReq(relatedReqFrame.Payload))
+		b.handleAppendEntriesResult(id, rpc.DecodeAppendEntriesRes(frame.Payload), rpc.DecodeAppendEntriesReq(relatedReqFrame.Payload))
 	}
 
 	return nil, nil
 }
 
-func (b *Brain) HandleVoteRequest(req *rpc.RequestVoteReq) *rpc.RequestVoteRes {
+func (b *Brain) handleVoteRequest(req *rpc.RequestVoteReq) *rpc.RequestVoteRes {
 	idx, log := b.entries.LatestLog()
 	if req.LastLogTerm < log.Term {
 		return &rpc.RequestVoteRes{
@@ -119,11 +120,11 @@ func (b *Brain) HandleVoteRequest(req *rpc.RequestVoteReq) *rpc.RequestVoteRes {
 	}
 }
 
-func (b *Brain) HandleVoteResult(id string, res *rpc.RequestVoteRes) {
+func (b *Brain) handleVoteResult(id string, res *rpc.RequestVoteRes) {
 	b.raftState.GotVote(res.VoteGranted, res.Term)
 }
 
-func (b *Brain) HandleAppendEntriesRequest(id string, req *rpc.AppendEntriesReq) *rpc.AppendEntriesRes {
+func (b *Brain) handleAppendEntriesRequest(id string, req *rpc.AppendEntriesReq) *rpc.AppendEntriesRes {
 	if req.Term < b.raftState.Term() {
 		return &rpc.AppendEntriesRes{
 			Term:    b.raftState.Term(),
@@ -147,21 +148,21 @@ func (b *Brain) HandleAppendEntriesRequest(id string, req *rpc.AppendEntriesReq)
 	}
 }
 
-func (b *Brain) HandleAppendEntriesResult(id string, res *rpc.AppendEntriesRes, relatedReq *rpc.AppendEntriesReq) {
-	entries := DecodeAppendEntries(relatedReq.Entries)
+func (b *Brain) handleAppendEntriesResult(id string, res *rpc.AppendEntriesRes, relatedReq *rpc.AppendEntriesReq) {
+	entries := core.DecodeAppendEntries(relatedReq.Entries)
 
 	b.raftState.GotAERes(id, res.Success, res.Term, relatedReq.PrevLogIndex+entries.Len())
 }
 
-func (b *Brain) HandleStateActionReq(req *rpc.StateActionReq) *rpc.StateActionRes {
-	if b.raftState.Role() != RAFT_ROLE_LEADER {
+func (b *Brain) handleStateActionReq(req *rpc.StateActionReq) *rpc.StateActionRes {
+	if b.raftState.Role() != core.RAFT_ROLE_LEADER {
 		return &rpc.StateActionRes{
 			Success:      false,
 			RedirectAddr: b.raftState.LeaderId(),
 		}
 	}
 
-	b.entries.Append(AppendEntry{
+	b.entries.Append(core.AppendEntry{
 		Term:         b.raftState.Term(),
 		CounterDelta: req.CounterDelta,
 		Action:       req.Action,
@@ -174,19 +175,19 @@ func (b *Brain) HandleStateActionReq(req *rpc.StateActionReq) *rpc.StateActionRe
 	}
 }
 
-func (b *Brain) HandleStateEvent() {
-	for event := range b.raftState.eventCh {
+func (b *Brain) handleStateEvent() {
+	for event := range b.raftState.EventCh() {
 		switch event {
-		case RAFT_STATE_EVENT_ROLE_CHANGE:
+		case core.RAFT_STATE_EVENT_ROLE_CHANGE:
 			switch b.raftState.Role() {
-			case RAFT_ROLE_FOLLOWER:
+			case core.RAFT_ROLE_FOLLOWER:
 				b.switchToFollower()
-			case RAFT_ROLE_CANDIDATE:
+			case core.RAFT_ROLE_CANDIDATE:
 				b.switchToCandidate()
-			case RAFT_ROLE_LEADER:
+			case core.RAFT_ROLE_LEADER:
 				b.switchToLeader()
 			}
-		case RAFT_STATE_EVENT_COMMIT_IDX_CHANGE:
+		case core.RAFT_STATE_EVENT_COMMIT_IDX_CHANGE:
 			b.applyState()
 		}
 	}
@@ -202,7 +203,7 @@ func (b *Brain) switchToFollower() {
 
 func (b *Brain) switchToCandidate() {
 	b.deps.ElectionTimeoutTimer.Stop()
-	go b.ElectionLoop()
+	go b.electionLoop()
 }
 
 func (b *Brain) switchToLeader() {
@@ -274,7 +275,7 @@ func (b *Brain) startElectionTimeoutCountdown() {
 			if !b.raftState.IsVoted() {
 				continue
 			}
-			b.raftState.UpdateRole(RAFT_ROLE_CANDIDATE)
+			b.raftState.UpdateRole(core.RAFT_ROLE_CANDIDATE)
 			return
 		case <-b.deps.ElectionTimeoutTimer.S():
 			return
@@ -283,7 +284,7 @@ func (b *Brain) startElectionTimeoutCountdown() {
 
 }
 
-func (b *Brain) ElectionLoop() {
+func (b *Brain) electionLoop() {
 	for {
 		b.deps.WaitForElectionTimer.Reset()
 		select {
