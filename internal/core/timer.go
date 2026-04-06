@@ -4,9 +4,8 @@ import (
 	"time"
 )
 
-type Ticker interface {
+type Timer interface {
 	C() <-chan time.Time
-	Reset()
 	Stop()
 	S() <-chan struct{}
 }

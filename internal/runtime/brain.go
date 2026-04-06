@@ -20,13 +20,13 @@ type Fellow struct {
 
 type BrainDeps struct {
 	// Timer for candidate to restart an election after no one is elected
-	ElectionTimer core.Ticker
+	ElectionTimer core.Timer
 	// Timer for candidate to wait before starting an election
-	WaitForElectionTimer core.Ticker
+	WaitForElectionTimer core.Timer
 	// Timer for follower to determine leader is down and not sending AE heartbeat
-	ElectionTimeoutTimer core.Ticker
+	ElectionTimeoutTimer core.Timer
 	// Timer for leader to send periodic AE heartbeat
-	HeartbeatTimer core.Ticker
+	HeartbeatTimer core.Timer
 
 	EntriesStore core.Store
 	Transport    core.Transport
@@ -312,7 +312,6 @@ Outer:
 
 		select {
 		case <-b.deps.HeartbeatTimer.C():
-			b.deps.HeartbeatTimer.Reset()
 		case <-b.deps.HeartbeatTimer.S():
 			break Outer
 		}
@@ -321,7 +320,6 @@ Outer:
 
 func (b *Brain) startElectionTimeoutCountdown() {
 	for {
-		b.deps.ElectionTimeoutTimer.Reset()
 		select {
 		case <-b.deps.ElectionTimeoutTimer.C():
 			if !b.raftState.IsVoted() {
@@ -338,7 +336,6 @@ func (b *Brain) startElectionTimeoutCountdown() {
 
 func (b *Brain) electionLoop() {
 	for {
-		b.deps.WaitForElectionTimer.Reset()
 		select {
 		case <-b.deps.WaitForElectionTimer.C():
 		case <-b.deps.WaitForElectionTimer.S():
@@ -372,7 +369,6 @@ func (b *Brain) electionLoop() {
 			b.deps.Transport.Send(fellow.Id, frame.Encode())
 		}
 
-		b.deps.ElectionTimer.Reset()
 		select {
 		case <-b.deps.ElectionTimer.C():
 		case <-b.deps.ElectionTimer.S():
