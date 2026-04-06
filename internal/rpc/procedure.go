@@ -18,7 +18,9 @@ func (rb Frame) Encode() []byte {
 
 	out[0] = byte(rb.RPCType)
 	binary.BigEndian.PutUint32(out[1:5], rb.RelationId)
-	copy(out[5:], rb.Payload)
+	if rb.Payload != nil {
+		copy(out[5:], rb.Payload)
+	}
 
 	return out
 }
