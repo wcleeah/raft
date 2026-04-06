@@ -1,12 +1,19 @@
 package core
 
-import "com.lwc.raft/internal/rpc"
+import (
+	"time"
 
-type TransportHandler func(id string, frame rpc.Frame, relatedReqFrame rpc.Frame) (rpc.RpcPayload, error) 
+)
+
+type TransportHandler func(id string, bs []byte)
+type TransportCfg struct {
+	ReadDln  time.Duration
+	WriteDln time.Duration
+}
 
 type Transport interface {
-	Boardcast(rpc.RpcPayload)
-	Send(id string, payload rpc.RpcPayload)
-	Listen(TransportHandler)
-	RegisterPeer(id string, addr string, th TransportHandler)
+	Send(id string, bs []byte) error
+	Listen(addr string, th TransportHandler, cfg TransportCfg) error
+	RegisterPeer(id string, addr string, th TransportHandler, cfg TransportCfg) error
+	CloseAll(reason error)
 }

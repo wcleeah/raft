@@ -3,33 +3,39 @@ package runtime
 import (
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
-	"com.lwc.raft/internal/rpc"
 	"com.lwc.raft/internal/core"
+	"com.lwc.raft/internal/rpc"
 )
 
 type Fellow struct {
-	Id   string
-	Addr string
+	mapMu sync.Mutex
+
+	Id         string
+	Addr       string
+	RelationId atomic.Uint32
+	ReqMap     map[uint32]rpc.RpcPayload
 }
 
 type BrainDeps struct {
 	// Timer for candidate to restart an election after no one is elected
-	ElectionTimer core.Timer
+	ElectionTimer core.Ticker
 	// Timer for candidate to wait before starting an election
-	WaitForElectionTimer core.Timer
+	WaitForElectionTimer core.Ticker
 	// Timer for follower to determine leader is down and not sending AE heartbeat
-	ElectionTimeoutTimer core.Timer
+	ElectionTimeoutTimer core.Ticker
 	// Timer for leader to send periodic AE heartbeat
-	HeartbeatTimer core.Timer
+	HeartbeatTimer core.Ticker
 
 	EntriesStore core.Store
 	Transport    core.Transport
 }
 
 type BrainConfig struct {
-	SelfId  string
-	Fellows []*Fellow
+	Id      string
+	Addr    string
+	Fellows map[string]*Fellow
 }
 
 type Brain struct {
@@ -41,7 +47,8 @@ type Brain struct {
 	stateMachine *core.StateMachine
 	deps         *BrainDeps
 	id           string
-	fellows      []*Fellow
+	addr         string
+	fellows      map[string]*Fellow
 }
 
 func NewBrain(l *slog.Logger, deps *BrainDeps, cfg *BrainConfig) *Brain {
@@ -51,20 +58,21 @@ func NewBrain(l *slog.Logger, deps *BrainDeps, cfg *BrainConfig) *Brain {
 		raftState:    &core.RaftState{},
 		stateMachine: &core.StateMachine{},
 		deps:         deps,
-		id:           cfg.SelfId,
+		id:           cfg.Id,
+		addr:         cfg.Addr,
 		fellows:      cfg.Fellows,
 	}
 }
 
-func (b *Brain) Start() {
+func (b *Brain) Start(cfg core.TransportCfg) {
 	go b.handleStateEvent()
 
 	// initiate connection for rpc request FROM this node and response for that request
-	go b.deps.Transport.Listen(b.handleRPC)
+	go b.deps.Transport.Listen(b.addr, b.handleRPC, cfg)
 
 	// initiate connection for rpc request TO this node and response for that request
 	for _, fellow := range b.fellows {
-		go b.deps.Transport.RegisterPeer(fellow.Id, fellow.Addr, b.handleRPC)
+		go b.deps.Transport.RegisterPeer(fellow.Id, fellow.Addr, b.handleRPC, cfg)
 		b.raftState.RegisterNode(fellow.Id)
 	}
 
@@ -72,61 +80,94 @@ func (b *Brain) Start() {
 	b.raftState.UpdateRole(core.RAFT_ROLE_FOLLOWER)
 }
 
-func (b *Brain) handleRPC(id string, frame rpc.Frame, relatedReqFrame rpc.Frame) (rpc.RpcPayload, error) {
+func (b *Brain) handleRPC(id string, bs []byte) {
+	frame := rpc.DecodeRPCFrame(bs)
+	fellow, ok := b.fellows[id]
+	if !ok {
+		return
+	}
+
 	switch frame.RPCType {
 	case rpc.RPC_TYPE_REQUEST_VOTE_REQ:
 		res := b.handleVoteRequest(rpc.DecodeRequestVoteReq(frame.Payload))
-		return res, nil
+
+		resFrame := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
+			RelationId: frame.RelationId,
+			Payload:    res.Encode(),
+		}
+		b.deps.Transport.Send(id, resFrame.Encode())
 	case rpc.RPC_TYPE_APPEND_ENTRIES_REQ:
 		res := b.handleAppendEntriesRequest(id, rpc.DecodeAppendEntriesReq(frame.Payload))
-		return res, nil
+
+		resFrame := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_APPEND_ENTRIES_RES,
+			RelationId: frame.RelationId,
+			Payload:    res.Encode(),
+		}
+		b.deps.Transport.Send(id, resFrame.Encode())
 	case rpc.RPC_TYPE_STATE_ACTION_REQ:
 		res := b.handleStateActionReq(rpc.DecodeStateActionReq(frame.Payload))
-		return res, nil
+
+		resFrame := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_APPEND_ENTRIES_RES,
+			RelationId: frame.RelationId,
+			Payload:    res.Encode(),
+		}
+		b.deps.Transport.Send(id, resFrame.Encode())
 	case rpc.RPC_TYPE_REQUEST_VOTE_RES:
 		b.handleVoteResult(id, rpc.DecodeRequestVoteRes(frame.Payload))
 	case rpc.RPC_TYPE_APPEND_ENTRIES_RES:
-		b.handleAppendEntriesResult(id, rpc.DecodeAppendEntriesRes(frame.Payload), rpc.DecodeAppendEntriesReq(relatedReqFrame.Payload))
-	}
+		fellow.mapMu.Lock()
+		relatedPayload, ok := fellow.ReqMap[frame.RelationId]
+		fellow.mapMu.Unlock()
 
-	return nil, nil
+		if relatedPayload == nil {
+			return
+		}
+		aer, ok := relatedPayload.(*rpc.AppendEntriesReq)
+		if !ok {
+			return
+		}
+		b.handleAppendEntriesResult(id, rpc.DecodeAppendEntriesRes(frame.Payload), *aer)
+	}
 }
 
-func (b *Brain) handleVoteRequest(req *rpc.RequestVoteReq) *rpc.RequestVoteRes {
+func (b *Brain) handleVoteRequest(req rpc.RequestVoteReq) rpc.RequestVoteRes {
 	idx, log := b.entries.LatestLog()
 	if req.LastLogTerm < log.Term {
-		return &rpc.RequestVoteRes{
+		return rpc.RequestVoteRes{
 			VoteGranted: false,
 			Term:        b.raftState.Term(),
 		}
 	}
 	if req.LastLogIndex < idx {
-		return &rpc.RequestVoteRes{
+		return rpc.RequestVoteRes{
 			VoteGranted: false,
 			Term:        b.raftState.Term(),
 		}
 	}
 	term, err := b.raftState.Vote(req.CandidateId, req.Term)
 	if err != nil {
-		return &rpc.RequestVoteRes{
+		return rpc.RequestVoteRes{
 			VoteGranted: false,
 			Term:        term,
 		}
 	}
 
-	return &rpc.RequestVoteRes{
+	return rpc.RequestVoteRes{
 		VoteGranted: true,
 		Term:        term,
 	}
 }
 
-func (b *Brain) handleVoteResult(id string, res *rpc.RequestVoteRes) {
+func (b *Brain) handleVoteResult(id string, res rpc.RequestVoteRes) {
 	b.raftState.GotVote(res.VoteGranted, res.Term)
 }
 
-func (b *Brain) handleAppendEntriesRequest(id string, req *rpc.AppendEntriesReq) *rpc.AppendEntriesRes {
+func (b *Brain) handleAppendEntriesRequest(id string, req rpc.AppendEntriesReq) rpc.AppendEntriesRes {
 	if req.Term < b.raftState.Term() {
-		return &rpc.AppendEntriesRes{
+		return rpc.AppendEntriesRes{
 			Term:    b.raftState.Term(),
 			Success: false,
 		}
@@ -134,7 +175,7 @@ func (b *Brain) handleAppendEntriesRequest(id string, req *rpc.AppendEntriesReq)
 
 	latestLogIdx, err := b.entries.Replicate(req.Entries, req.PrevLogIndex, req.PrevLogTerm)
 	if err != nil {
-		return &rpc.AppendEntriesRes{
+		return rpc.AppendEntriesRes{
 			Term:    b.raftState.Term(),
 			Success: false,
 		}
@@ -142,21 +183,21 @@ func (b *Brain) handleAppendEntriesRequest(id string, req *rpc.AppendEntriesReq)
 
 	b.raftState.GotAEReq(req.LeaderId, req.Term, req.LeaderCommit, latestLogIdx)
 
-	return &rpc.AppendEntriesRes{
+	return rpc.AppendEntriesRes{
 		Term:    b.raftState.Term(),
 		Success: true,
 	}
 }
 
-func (b *Brain) handleAppendEntriesResult(id string, res *rpc.AppendEntriesRes, relatedReq *rpc.AppendEntriesReq) {
+func (b *Brain) handleAppendEntriesResult(id string, res rpc.AppendEntriesRes, relatedReq rpc.AppendEntriesReq) {
 	entries := core.DecodeAppendEntries(relatedReq.Entries)
 
 	b.raftState.GotAERes(id, res.Success, res.Term, relatedReq.PrevLogIndex+entries.Len())
 }
 
-func (b *Brain) handleStateActionReq(req *rpc.StateActionReq) *rpc.StateActionRes {
+func (b *Brain) handleStateActionReq(req rpc.StateActionReq) rpc.StateActionRes {
 	if b.raftState.Role() != core.RAFT_ROLE_LEADER {
-		return &rpc.StateActionRes{
+		return rpc.StateActionRes{
 			Success:      false,
 			RedirectAddr: b.raftState.LeaderId(),
 		}
@@ -170,7 +211,7 @@ func (b *Brain) handleStateActionReq(req *rpc.StateActionReq) *rpc.StateActionRe
 
 	b.raftState.IncLeaderIndexes(b.id)
 
-	return &rpc.StateActionRes{
+	return rpc.StateActionRes{
 		Success: true,
 	}
 }
@@ -247,15 +288,26 @@ Outer:
 			if err != nil {
 				continue
 			}
-
-			b.deps.Transport.Send(fellow.Id, &rpc.AppendEntriesReq{
+			payload := rpc.AppendEntriesReq{
 				Term:         term,
 				LeaderCommit: commitIdx,
 				PrevLogIndex: prevLogIdx,
 				PrevLogTerm:  prevLog.Term,
 				LeaderId:     b.id,
 				Entries:      b.entries.GetHeartbeatEntries(nextIndex).Encode(),
-			})
+			}
+			rId := fellow.RelationId.Add(1)
+			frame := rpc.Frame{
+				RPCType:    rpc.RPC_TYPE_APPEND_ENTRIES_REQ,
+				RelationId: rId,
+				Payload:    payload.Encode(),
+			}
+
+			fellow.mapMu.Lock()
+			fellow.ReqMap[rId] = &payload
+			fellow.mapMu.Unlock()
+
+			b.deps.Transport.Send(fellow.Id, frame.Encode())
 		}
 
 		select {
@@ -299,12 +351,26 @@ func (b *Brain) electionLoop() {
 		}
 
 		lastLogIndex, lastLog := b.entries.LatestLog()
-		b.deps.Transport.Boardcast(&rpc.RequestVoteReq{
-			Term:         b.raftState.Term(),
-			CandidateId:  b.id,
-			LastLogIndex: lastLogIndex,
-			LastLogTerm:  lastLog.Term,
-		})
+
+		for _, fellow := range b.fellows {
+			payload := rpc.RequestVoteReq{
+				Term:         b.raftState.Term(),
+				CandidateId:  b.id,
+				LastLogIndex: lastLogIndex,
+				LastLogTerm:  lastLog.Term,
+			}
+			rId := fellow.RelationId.Add(1)
+			frame := rpc.Frame{
+				RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_REQ,
+				RelationId: rId,
+				Payload:    payload.Encode(),
+			}
+			fellow.mapMu.Lock()
+			fellow.ReqMap[rId] = &payload
+			fellow.mapMu.Unlock()
+
+			b.deps.Transport.Send(fellow.Id, frame.Encode())
+		}
 
 		b.deps.ElectionTimer.Reset()
 		select {

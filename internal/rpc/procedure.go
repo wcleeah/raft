@@ -4,33 +4,33 @@ import "encoding/binary"
 
 type Frame struct {
 	RPCType    RPC_TYPE
-	RelationId uint16
+	RelationId uint32
 	Payload    []byte
 }
 
 // byte layout:
 //
 //	RPCType -> 1 byte
-//	RelationId -> 2 byte
+//	RelationId -> 4 byte
 //	Payload -> len
 func (rb Frame) Encode() []byte {
-	out := make([]byte, 3+len(rb.Payload))
+	out := make([]byte, 5+len(rb.Payload))
 
 	out[0] = byte(rb.RPCType)
-	binary.BigEndian.PutUint16(out[1:3], rb.RelationId)
-	copy(out[3:], rb.Payload)
+	binary.BigEndian.PutUint32(out[1:5], rb.RelationId)
+	copy(out[5:], rb.Payload)
 
 	return out
 }
 
-func DecodeRPCBase(bs []byte) *Frame {
-	rb := &Frame{
+func DecodeRPCFrame(bs []byte) Frame {
+	rb := Frame{
 		RPCType:    uint(bs[0]),
-		RelationId: binary.BigEndian.Uint16(bs[1:3]),
-		Payload:    make([]byte, len(bs[3:])),
+		RelationId: binary.BigEndian.Uint32(bs[1:5]),
+		Payload:    make([]byte, len(bs[5:])),
 	}
 
-	copy(rb.Payload, bs[3:])
+	copy(rb.Payload, bs[5:])
 
 	return rb
 }
@@ -71,8 +71,8 @@ func (aer AppendEntriesReq) Encode() []byte {
 	return out
 }
 
-func DecodeAppendEntriesReq(bs []byte) *AppendEntriesReq {
-	aer := &AppendEntriesReq{
+func DecodeAppendEntriesReq(bs []byte) AppendEntriesReq {
+	aer := AppendEntriesReq{
 		Term:         binary.BigEndian.Uint32(bs[0:4]),
 		LeaderCommit: binary.BigEndian.Uint32(bs[4:8]),
 		PrevLogIndex: binary.BigEndian.Uint32(bs[8:12]),
@@ -109,8 +109,8 @@ func (aer AppendEntriesRes) Encode() []byte {
 	return out
 }
 
-func DecodeAppendEntriesRes(bs []byte) *AppendEntriesRes {
-	return &AppendEntriesRes{
+func DecodeAppendEntriesRes(bs []byte) AppendEntriesRes {
+	return AppendEntriesRes{
 		Term:    binary.BigEndian.Uint32(bs[0:4]),
 		Success: byteToBool(bs[4]),
 	}
@@ -141,8 +141,8 @@ func (rvr RequestVoteReq) Encode() []byte {
 	return out
 }
 
-func DecodeRequestVoteReq(bs []byte) *RequestVoteReq {
-	return &RequestVoteReq{
+func DecodeRequestVoteReq(bs []byte) RequestVoteReq {
+	return RequestVoteReq{
 		Term:         binary.BigEndian.Uint32(bs[0:4]),
 		LastLogIndex: binary.BigEndian.Uint32(bs[4:8]),
 		LastLogTerm:  binary.BigEndian.Uint32(bs[8:12]),
@@ -168,8 +168,8 @@ func (rvr RequestVoteRes) Encode() []byte {
 	return out
 }
 
-func DecodeRequestVoteRes(bs []byte) *RequestVoteRes {
-	return &RequestVoteRes{
+func DecodeRequestVoteRes(bs []byte) RequestVoteRes {
+	return RequestVoteRes{
 		Term:        binary.BigEndian.Uint32(bs[0:4]),
 		VoteGranted: byteToBool(bs[4]),
 	}
@@ -193,8 +193,8 @@ func (rvr StateActionReq) Encode() []byte {
 	return out
 }
 
-func DecodeStateActionReq(bs []byte) *StateActionReq {
-	return &StateActionReq{
+func DecodeStateActionReq(bs []byte) StateActionReq {
+	return StateActionReq{
 		CounterDelta: binary.BigEndian.Uint16(bs[0:2]),
 		Action:       bs[2],
 	}
@@ -214,8 +214,8 @@ func (rvr StateActionRes) Encode() []byte {
 	return out
 }
 
-func DecodeStateActionRes(bs []byte) *StateActionRes {
-	return &StateActionRes{
+func DecodeStateActionRes(bs []byte) StateActionRes {
+	return StateActionRes{
 		Success:      byteToBool(bs[0]),
 		RedirectAddr: string(bs[1:]),
 	}

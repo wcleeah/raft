@@ -12,45 +12,45 @@ import (
 
 var update = flag.Bool("update", false, "update golden files")
 
-func TestRPCBaseEncode(t *testing.T) {
+func TestRPCFrameEncode(t *testing.T) {
 	rb := rpc.Frame{
 		RPCType:    1,
-		RelationId: 2,
+		RelationId: 0x01020304,
 		Payload:    []byte("payload for rpc base"),
 	}
 
 	out := rb.Encode()
-	cmpBytesWithGolden(t, "RPCBaseEncode.golden", out)
+	cmpBytesWithGolden(t, "RPCFrameEncode.golden", out)
 }
 
-func TestRPCBaseDecode(t *testing.T) {
+func TestRPCFrameDecode(t *testing.T) {
 	rb := rpc.Frame{
 		RPCType:    3,
-		RelationId: 4,
+		RelationId: 0x05060708,
 		Payload:    []byte("payload from golden data"),
 	}
 
 	out := rb.Encode()
 
-	golden := getBytesFromGolden(t, "RPCBaseDecode.golden", out)
-	rbOut := rpc.DecodeRPCBase(golden)
+	golden := getBytesFromGolden(t, "RPCFrameDecode.golden", out)
+	rbOut := rpc.DecodeRPCFrame(golden)
 
-	if diff := cmp.Diff(rb, *rbOut); diff != "" {
-		t.Fatalf("RPCBase mismatch (-want +got):\n%s", diff)
+	if diff := cmp.Diff(rb, rbOut); diff != "" {
+		t.Fatalf("RPCFrame mismatch (-want +got):\n%s", diff)
 	}
 }
 
-func TestRPCBaseByteLayoutSync(t *testing.T) {
+func TestRPCFrameByteLayoutSync(t *testing.T) {
 	rb := rpc.Frame{
 		RPCType:    5,
-		RelationId: 6,
-		Payload:    []byte("rpc base byte layout"),
+		RelationId: 0x090A0B0C,
+		Payload:    []byte("rpc frame byte layout"),
 	}
 
 	out := rb.Encode()
-	rbOut := rpc.DecodeRPCBase(out)
-	if diff := cmp.Diff(rb, *rbOut); diff != "" {
-		t.Fatalf("RPCBase byte layout mismatch, (-want +got):\n%s", diff)
+	rbOut := rpc.DecodeRPCFrame(out)
+	if diff := cmp.Diff(rb, rbOut); diff != "" {
+		t.Fatalf("RPCFrame byte layout mismatch, (-want +got):\n%s", diff)
 	}
 }
 
@@ -83,7 +83,7 @@ func TestAERDecode(t *testing.T) {
 	golden := getBytesFromGolden(t, "AERDecode.golden", out)
 	aerOut := rpc.DecodeAppendEntriesReq(golden)
 
-	if diff := cmp.Diff(aer, *aerOut); diff != "" {
+	if diff := cmp.Diff(aer, aerOut); diff != "" {
 		t.Fatalf("AER mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -100,7 +100,7 @@ func TestAERByteLayoutSync(t *testing.T) {
 
 	out := aer.Encode()
 	aerOut := rpc.DecodeAppendEntriesReq(out)
-	if diff := cmp.Diff(aer, *aerOut); diff != "" {
+	if diff := cmp.Diff(aer, aerOut); diff != "" {
 		t.Fatalf("AER byte layout mismatch, (-want +got):\n%s", diff)
 	}
 }
@@ -126,7 +126,7 @@ func TestAEResDecode(t *testing.T) {
 	golden := getBytesFromGolden(t, "AEResDecode.golden", out)
 	aerOut := rpc.DecodeAppendEntriesRes(golden)
 
-	if diff := cmp.Diff(aer, *aerOut); diff != "" {
+	if diff := cmp.Diff(aer, aerOut); diff != "" {
 		t.Fatalf("AERes mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -139,7 +139,7 @@ func TestAEResByteLayoutSync(t *testing.T) {
 
 	out := aer.Encode()
 	aerOut := rpc.DecodeAppendEntriesRes(out)
-	if diff := cmp.Diff(aer, *aerOut); diff != "" {
+	if diff := cmp.Diff(aer, aerOut); diff != "" {
 		t.Fatalf("AERes byte layout mismatch, (-want +got):\n%s", diff)
 	}
 }
@@ -169,7 +169,7 @@ func TestRVReqDecode(t *testing.T) {
 	golden := getBytesFromGolden(t, "RVReqDecode.golden", out)
 	rvrOut := rpc.DecodeRequestVoteReq(golden)
 
-	if diff := cmp.Diff(rvr, *rvrOut); diff != "" {
+	if diff := cmp.Diff(rvr, rvrOut); diff != "" {
 		t.Fatalf("RVReq mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -184,7 +184,7 @@ func TestRVReqByteLayoutSync(t *testing.T) {
 
 	out := rvr.Encode()
 	rvrOut := rpc.DecodeRequestVoteReq(out)
-	if diff := cmp.Diff(rvr, *rvrOut); diff != "" {
+	if diff := cmp.Diff(rvr, rvrOut); diff != "" {
 		t.Fatalf("RVReq byte layout mismatch, (-want +got):\n%s", diff)
 	}
 }
@@ -210,7 +210,7 @@ func TestRVResDecode(t *testing.T) {
 	golden := getBytesFromGolden(t, "RVResDecode.golden", out)
 	rvrOut := rpc.DecodeRequestVoteRes(golden)
 
-	if diff := cmp.Diff(rvr, *rvrOut); diff != "" {
+	if diff := cmp.Diff(rvr, rvrOut); diff != "" {
 		t.Fatalf("RVRes mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -223,7 +223,7 @@ func TestRVResByteLayoutSync(t *testing.T) {
 
 	out := rvr.Encode()
 	rvrOut := rpc.DecodeRequestVoteRes(out)
-	if diff := cmp.Diff(rvr, *rvrOut); diff != "" {
+	if diff := cmp.Diff(rvr, rvrOut); diff != "" {
 		t.Fatalf("RVRes byte layout mismatch, (-want +got):\n%s", diff)
 	}
 }
@@ -249,7 +249,7 @@ func TestSAReqDecode(t *testing.T) {
 	golden := getBytesFromGolden(t, "SAReqDecode.golden", out)
 	sarOut := rpc.DecodeStateActionReq(golden)
 
-	if diff := cmp.Diff(sar, *sarOut); diff != "" {
+	if diff := cmp.Diff(sar, sarOut); diff != "" {
 		t.Fatalf("SAReq mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -262,7 +262,7 @@ func TestSAReqByteLayoutSync(t *testing.T) {
 
 	out := sar.Encode()
 	sarOut := rpc.DecodeStateActionReq(out)
-	if diff := cmp.Diff(sar, *sarOut); diff != "" {
+	if diff := cmp.Diff(sar, sarOut); diff != "" {
 		t.Fatalf("SAReq byte layout mismatch, (-want +got):\n%s", diff)
 	}
 }
@@ -288,7 +288,7 @@ func TestSAResDecode(t *testing.T) {
 	golden := getBytesFromGolden(t, "SAResDecode.golden", out)
 	sarOut := rpc.DecodeStateActionRes(golden)
 
-	if diff := cmp.Diff(sar, *sarOut); diff != "" {
+	if diff := cmp.Diff(sar, sarOut); diff != "" {
 		t.Fatalf("SARes mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -301,7 +301,7 @@ func TestSAResByteLayoutSync(t *testing.T) {
 
 	out := sar.Encode()
 	sarOut := rpc.DecodeStateActionRes(out)
-	if diff := cmp.Diff(sar, *sarOut); diff != "" {
+	if diff := cmp.Diff(sar, sarOut); diff != "" {
 		t.Fatalf("SARes byte layout mismatch, (-want +got):\n%s", diff)
 	}
 }

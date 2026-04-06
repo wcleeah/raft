@@ -4,7 +4,7 @@ import (
 	"time"
 )
 
-type Timer interface {
+type Ticker interface {
 	C() <-chan time.Time
 	Reset()
 	Stop()
