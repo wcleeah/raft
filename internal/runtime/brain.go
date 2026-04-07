@@ -329,7 +329,7 @@ func (b *Brain) startElectionTimeoutCountdown() {
 	for {
 		select {
 		case <-b.deps.ElectionTimeoutTimer.C():
-			if !b.raftState.IsVoted() {
+			if b.raftState.IsVoted() {
 				continue
 			}
 			b.raftState.UpdateRole(core.RAFT_ROLE_CANDIDATE)
