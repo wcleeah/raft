@@ -90,7 +90,8 @@ func (b *Brain) Start(cfg core.TransportCfg) {
 		fellow.mapMu.Unlock()
 	}
 
-	b.raftState.UpdateRole(core.RAFT_ROLE_FOLLOWER)
+	// default raft state role value is follower
+	b.switchToFollower()
 	b.l.Info("initial role set to follower", "node_id", b.id)
 }
 
