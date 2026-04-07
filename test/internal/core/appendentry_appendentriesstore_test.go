@@ -62,10 +62,10 @@ func TestReplicate(t *testing.T) {
 
 	entriesAfter := ae.GetHeartbeatEntries(1)
 	if diff := cmp.Diff(firstEntries, entriesAfter); diff != "" {
-		assert.Failf("First entries: AEStore Entries mismatch (-want +got):\n%s", diff)
+		assert.Failf("First entries", "AEStore Entries mismatch (-want +got):\n%s", diff)
 	}
 	if diff := cmp.Diff(firstEntries, fs.Saved[1:]); diff != "" {
-		assert.Failf("First entries: FakeStore Entries mismatch (-want +got):\n%s", diff)
+		assert.Failf("First entries", "FakeStore Entries mismatch (-want +got):\n%s", diff)
 	}
 
 	// replicate the second batch entries
@@ -94,10 +94,10 @@ func TestReplicate(t *testing.T) {
 	allEntries := append(firstEntries[:2], secondEntries...)
 
 	if diff := cmp.Diff(allEntries, entriesAfter); diff != "" {
-		assert.Failf("All entries: entriesAfter mismatch (-want +got):\n%s", diff)
+		assert.Failf("All entries", "entriesAfter mismatch (-want +got):\n%s", diff)
 	}
 	if diff := cmp.Diff(allEntries, fs.Saved[1:]); diff != "" {
-		assert.Failf("All entries: fake store mismatch (-want +got):\n%s", diff)
+		assert.Failf("All entries", "fake store mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -152,7 +152,7 @@ func TestApplyAll(t *testing.T) {
 	applyEntries := ae.ApplyAll(latestLogIndex)
 
 	if diff := cmp.Diff(entries, applyEntries); diff != "" {
-		assert.Failf("Entries mismatch (-want +got):\n%s", diff)
+		assert.Failf("Apply All", "Entries mismatch (-want +got):\n%s", diff)
 	}
 
 	emptyEntries := ae.ApplyAll(latestLogIndex)
@@ -175,7 +175,7 @@ func TestLatestLog(t *testing.T) {
 
 	assert.Equal(uint32(0), latestLogIdx)
 	if diff := cmp.Diff(core.AppendEntry{}, latestLog); diff != "" {
-		assert.Failf("Placeholder entry mismatch (-want +got):\n%s", diff)
+		assert.Failf("Latest Log", "Placeholder entry mismatch (-want +got):\n%s", diff)
 	}
 
 	entries := core.AppendEntries{
@@ -200,7 +200,7 @@ func TestLatestLog(t *testing.T) {
 
 	assert.Equal(uint32(3), latestLogIdxAfterReplicate)
 	if diff := cmp.Diff(entries[2], latestLogAfterReplicate); diff != "" {
-		assert.Failf("Placeholder entry mismatch (-want +got):\n%s", diff)
+		assert.Failf("Latest Log", "Placeholder entry mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -259,6 +259,6 @@ func TestGet(t *testing.T) {
 	assert.NoError(err)
 
 	if diff := cmp.Diff(entries[0], entry); diff != "" {
-		assert.Failf("Get entry mismatch (-want +got):\n%s", diff)
+		assert.Failf("Get entry", "entry mismatch (-want +got):\n%s", diff)
 	}
 }
