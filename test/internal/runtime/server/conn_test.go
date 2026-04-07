@@ -47,7 +47,7 @@ func TestSimpleRead(t *testing.T) {
 	assert.NoError(err, "Unexpected error during reading")
 	assert.Equal(d.Now().Add(readDln), netConn.ReadDln, "Dln mismatch")
 	if diff := cmp.Diff(f.Encode(), gotBs); diff != "" {
-		t.Fatalf("TestBs mismatch (-want +got):\n%s", diff)
+		assert.Failf("TestBs mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -86,7 +86,7 @@ func TestSimpleWrite(t *testing.T) {
 
 	assert.Equal(d.Now().Add(writeDln), netConn.WriteDln, "Dln mismatch")
 	if diff := cmp.Diff(testBs, d.conn.WriteBuf); diff != "" {
-		t.Fatalf("TestBs mismatch (-want +got):\n%s", diff)
+		assert.Failf("TestBs mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -131,7 +131,7 @@ func TestMultiWrite(t *testing.T) {
 
 	assert.Equal(d.Now().Add(writeDln), netConn.WriteDln, "Dln mismatch")
 	if diff := cmp.Diff(testBs, d.conn.WriteBuf); diff != "" {
-		t.Fatalf("TestBs mismatch (-want +got):\n%s", diff)
+		assert.Failf("TestBs mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -212,7 +212,7 @@ func TestKeetTrying_ReadError(t *testing.T) {
 	assert.NoError(rr.Err, "Unexpected error during reading")
 	assert.Equal(d.Now().Add(readDln), netConn.ReadDln, "Dln mismatch")
 	if diff := cmp.Diff(f.Encode(), rr.GotBs); diff != "" {
-		t.Fatalf("TestBs mismatch (-want +got):\n%s", diff)
+		assert.Failf("TestBs mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -267,7 +267,7 @@ func TestKeepTrying_WriteError(t *testing.T) {
 
 	assert.Equal(d.Now().Add(writeDln), netConn.WriteDln, "Dln mismatch")
 	if diff := cmp.Diff(testBs, d.conn.WriteBuf); diff != "" {
-		t.Fatalf("TestBs mismatch (-want +got):\n%s", diff)
+		assert.Failf("TestBs mismatch (-want +got):\n%s", diff)
 	}
 }
 

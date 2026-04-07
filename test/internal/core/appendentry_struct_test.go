@@ -116,13 +116,13 @@ func TestLastIndex(t *testing.T) {
 
 	aes := core.AppendEntries{}
 
-	assert.Equal(uint32(0), aes.LastIdx())
+	assert.Equal(uint32(0), aes.LatestIdx())
 
 	aes = append(aes, core.AppendEntry{})
-	assert.Equal(uint32(0), aes.LastIdx())
+	assert.Equal(uint32(0), aes.LatestIdx())
 
 	aes = append(aes, core.AppendEntry{})
-	assert.Equal(uint32(1), aes.LastIdx())
+	assert.Equal(uint32(1), aes.LatestIdx())
 }
 
 func TestAppendEntriesCopy(t *testing.T) {
