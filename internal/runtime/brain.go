@@ -70,11 +70,11 @@ func (b *Brain) Start(cfg core.TransportCfg) {
 	go b.handleStateEvent()
 
 	// initiate connection for rpc request FROM this node and response for that request
-	go b.deps.Transport.Listen(b.addr, b.handleRPC, cfg)
+	b.deps.Transport.RegisterSelf(b.addr, b.handleRPC, cfg)
 
 	// initiate connection for rpc request TO this node and response for that request
 	for _, fellow := range b.fellows {
-		go b.deps.Transport.RegisterPeer(fellow.Id, fellow.Addr, b.handleRPC, cfg)
+		b.deps.Transport.RegisterPeer(fellow.Id, fellow.Addr, b.handleRPC, cfg)
 		b.raftState.RegisterNode(fellow.Id)
 
 		fellow.mapMu.Lock()

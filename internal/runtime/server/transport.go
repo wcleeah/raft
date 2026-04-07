@@ -27,7 +27,7 @@ func (t *Transport) Send(id string, bs []byte) error {
 	return t.connMap[id].Write(bs)
 }
 
-func (t *Transport) Listen(addr string, th core.TransportHandler) error {
+func (t *Transport) RegisterSelf(addr string, th core.TransportHandler, cfg core.TransportCfg) error {
 	t.setupMap()
 	if _, ok := t.connMap["self"]; ok {
 		return errors.New("Self registered")
@@ -37,6 +37,8 @@ func (t *Transport) Listen(addr string, th core.TransportHandler) error {
 		Addr: addr,
 		Gcf:  t.ListenGcf,
 		Now:  time.Now,
+		ReadDln: cfg.ReadDln,
+		WriteDln: cfg.WriteDln,
 	}
 
 	go t.connMap["self"].Start()
@@ -45,7 +47,7 @@ func (t *Transport) Listen(addr string, th core.TransportHandler) error {
 	return nil
 }
 
-func (t *Transport) RegisterPeer(id string, addr string, th core.TransportHandler) error {
+func (t *Transport) RegisterPeer(id string, addr string, th core.TransportHandler, cfg core.TransportCfg) error {
 	t.setupMap()
 	if _, ok := t.connMap[id]; ok {
 		return errors.New("Id registered")
@@ -54,6 +56,8 @@ func (t *Transport) RegisterPeer(id string, addr string, th core.TransportHandle
 		Addr: addr,
 		Gcf:  t.DialGcf,
 		Now:  time.Now,
+		ReadDln: cfg.ReadDln,
+		WriteDln: cfg.WriteDln,
 	}
 
 	go t.connMap[id].Start()

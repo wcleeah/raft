@@ -13,7 +13,7 @@ type TransportCfg struct {
 
 type Transport interface {
 	Send(id string, bs []byte) error
-	Listen(addr string, th TransportHandler, cfg TransportCfg) error
+	RegisterSelf(addr string, th TransportHandler, cfg TransportCfg) error
 	RegisterPeer(id string, addr string, th TransportHandler, cfg TransportCfg) error
 	CloseAll(reason error)
 }
