@@ -19,20 +19,22 @@ func (t *Timer) C() <-chan time.Time {
 
 func (t *Timer) S() <-chan struct{} {
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.s == nil {
 		t.s = make(chan struct{}, 100)
 	}
-	t.mu.Unlock()
 
 	return t.s
 }
 
 func (t *Timer) Stop() {
 	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	if t.s == nil {
 		t.s = make(chan struct{}, 100)
+		return
 	}
-	t.mu.Unlock()
-
-	t.s <- struct{}{}
+	close(t.s)
+	t.s = make(chan struct{}, 100)
 }

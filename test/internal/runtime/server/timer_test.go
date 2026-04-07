@@ -30,8 +30,8 @@ func TestC(t *testing.T) {
 	testDur := 5 * time.Second
 	now := time.Now()
 	ft := &fakeTime{
-		T: make(chan time.Time, 1),
-		D: make(chan time.Duration, 1),
+		T:   make(chan time.Time, 1),
+		D:   make(chan time.Duration, 1),
 		Now: now,
 	}
 	timer := &server.Timer{
@@ -52,9 +52,10 @@ func TestStop(t *testing.T) {
 
 	timer := &server.Timer{}
 
+	ch := timer.S()
 	timer.Stop()
 	select {
-	case <-timer.S():
+	case <-ch:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timer.S did not fire")
 	}
