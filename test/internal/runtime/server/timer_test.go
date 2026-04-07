@@ -1,7 +1,6 @@
 package server_test
 
 import (
-	"sync"
 	"testing"
 	"time"
 
@@ -10,17 +9,19 @@ import (
 )
 
 type fakeTime struct {
-	T chan time.Time
-	d time.Duration
+	T   chan time.Time
+	D   chan time.Duration
+	Now time.Time
 }
 
 func (f *fakeTime) After(d time.Duration) <-chan time.Time {
-	f.d = d
+	f.D <- d
 	return f.T
 }
 
-func (f *fakeTime) Fire(now time.Time) {
-	f.T <- now.Add(f.d)
+func (f *fakeTime) Fire() {
+	d := <-f.D
+	f.T <- f.Now.Add(d)
 }
 
 func TestC(t *testing.T) {
@@ -30,22 +31,21 @@ func TestC(t *testing.T) {
 	now := time.Now()
 	ft := &fakeTime{
 		T: make(chan time.Time, 1),
+		D: make(chan time.Duration, 1),
+		Now: now,
 	}
 	timer := &server.Timer{
 		Duration: testDur,
 		After:    ft.After,
 	}
 
-	var wg sync.WaitGroup
 	go func() {
-		defer wg.Wait()
-
-		timeReceived := <-timer.C()
-		assert.Equal(now.Add(testDur), timeReceived)
+		ft.Fire()
 	}()
-	ft.Fire(now)
 
-	wg.Wait()
+	timeReceived := <-timer.C()
+
+	assert.Equal(now.Add(testDur), timeReceived)
 }
 
 func TestStop(t *testing.T) {
