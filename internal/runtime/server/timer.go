@@ -8,7 +8,6 @@ import (
 type Timer struct {
 	mu sync.Mutex
 
-	c        chan time.Time
 	s        chan struct{}
 	Duration time.Duration
 	After    func(d time.Duration) <-chan time.Time

@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 )
@@ -22,8 +23,9 @@ const (
 )
 
 type RaftState struct {
-	mu      sync.RWMutex
-	eventCh chan RaftStateEvent
+	mu          sync.RWMutex
+	setTermOnce sync.Once
+	eventCh     chan RaftStateEvent
 
 	term      uint32
 	role      RaftRole
@@ -220,7 +222,9 @@ func (rs *RaftState) GotAEReq(id string, term uint32, newCommitIdx uint32, lastL
 		rs.updateRole(RAFT_ROLE_FOLLOWER)
 	}
 
+	// election ended
 	rs.leaderId = id
+	rs.votedFor = ""
 
 	if rs.commitIndex >= newCommitIdx {
 		return
@@ -229,7 +233,7 @@ func (rs *RaftState) GotAEReq(id string, term uint32, newCommitIdx uint32, lastL
 	rs.updateCommitIdx(min(newCommitIdx, lastLogIndex))
 }
 
-func (rs *RaftState) GotAERes(id string, success bool, term uint32, matchIdx uint32) {
+func (rs *RaftState) GotAERes(id string, success bool, term uint32, matchIdx uint32, logs AppendEntries) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
@@ -261,7 +265,8 @@ func (rs *RaftState) GotAERes(id string, success bool, term uint32, matchIdx uin
 	slices.Sort(matchIndexes)
 
 	tIdx := rs.threshold - 1
-	if rs.commitIndex < matchIndexes[tIdx] {
+	possibleNewCommitIndex := matchIndexes[tIdx]
+	if rs.commitIndex < possibleNewCommitIndex && rs.term == logs[possibleNewCommitIndex].Term {
 		rs.updateCommitIdx(matchIndexes[tIdx])
 	}
 }
@@ -276,6 +281,15 @@ func (rs *RaftState) IncLeaderIndexes(id string) {
 
 	rs.matchIndex[id]++
 	rs.nextIndex[id]++
+}
+
+func (rs *RaftState) RestoreTerm(term uint32) {
+	rs.setTermOnce.Do(func() {
+		rs.mu.Lock()
+		defer rs.mu.Unlock()
+
+		rs.term = term
+	})
 }
 
 func (rs *RaftState) RegisterNode(id string) {

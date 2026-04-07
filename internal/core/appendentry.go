@@ -45,7 +45,7 @@ func (ae AppendEntries) Len() uint32 {
 	return uint32(len(ae))
 }
 
-func (ae AppendEntries) LastIdx() uint32 {
+func (ae AppendEntries) LatestIdx() uint32 {
 	l := ae.Len()
 
 	// a weird mixture to try to match 1-based idx of raft log + 0-based idx of go arr/slice
@@ -54,6 +54,10 @@ func (ae AppendEntries) LastIdx() uint32 {
 	}
 
 	return 0
+}
+
+func (ae AppendEntries) LatestLog() AppendEntry {
+	return ae[ae.LatestIdx()]
 }
 
 func (ae AppendEntries) Copy() AppendEntries {
@@ -103,6 +107,16 @@ func NewAppendEntriesStore(store Store) *AppendEntriesStore {
 	}
 }
 
+func (ae *AppendEntriesStore) Copy() AppendEntries {
+	ae.mu.Lock()
+	defer ae.mu.Unlock()
+
+	cop := make(AppendEntries, len(ae.entries))
+	copy(cop, ae.entries)
+
+	return cop
+}
+
 func (ae *AppendEntriesStore) Append(entry AppendEntry) {
 	ae.mu.Lock()
 	defer ae.mu.Unlock()
@@ -130,7 +144,7 @@ func (ae *AppendEntriesStore) Replicate(bs []byte, prevLogIndex uint32, prevLogT
 	ae.entries = append(ae.entries[:prevLogIndex+1], newEntries...)
 	ae.Store.ReplaceFrom(prevLogIndex+1, newEntries)
 
-	return ae.entries.LastIdx(), nil
+	return ae.entries.LatestIdx(), nil
 }
 
 func (ae *AppendEntriesStore) ApplyAll(commitIdx uint32) AppendEntries {
@@ -148,6 +162,7 @@ func (ae *AppendEntriesStore) ApplyAll(commitIdx uint32) AppendEntries {
 	if commitIdx >= ae.entries.Len() {
 		return AppendEntries{}
 	}
+
 	res := make(AppendEntries, commitIdx-ae.lastAppliedIdx)
 
 	copy(res, ae.entries[ae.lastAppliedIdx+1:commitIdx+1])
@@ -164,11 +179,10 @@ func (ae *AppendEntriesStore) LatestLog() (uint32, AppendEntry) {
 		return 0, AppendEntry{}
 	}
 
-	lastIdx := ae.entries.LastIdx()
-	return lastIdx, ae.entries[lastIdx]
+	return ae.entries.LatestIdx(), ae.entries.LatestLog()
 }
 
-func (ae *AppendEntriesStore) Restore() {
+func (ae *AppendEntriesStore) Restore() (uint32, AppendEntry) {
 	ae.mu.Lock()
 	defer ae.mu.Unlock()
 
@@ -178,6 +192,8 @@ func (ae *AppendEntriesStore) Restore() {
 	}
 
 	ae.entries = append(ae.entries, DecodeAppendEntries(ss)...)
+
+	return ae.entries.LatestIdx(), ae.entries.LatestLog()
 }
 
 func (ae *AppendEntriesStore) Get(idx uint32) (AppendEntry, error) {

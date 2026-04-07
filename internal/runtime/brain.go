@@ -65,6 +65,8 @@ func NewBrain(l *slog.Logger, deps *BrainDeps, cfg *BrainConfig) *Brain {
 }
 
 func (b *Brain) Start(cfg core.TransportCfg) {
+	_, latestLog := b.entries.Restore()
+	b.raftState.RestoreTerm(latestLog.Term)
 	go b.handleStateEvent()
 
 	// initiate connection for rpc request FROM this node and response for that request
@@ -74,9 +76,14 @@ func (b *Brain) Start(cfg core.TransportCfg) {
 	for _, fellow := range b.fellows {
 		go b.deps.Transport.RegisterPeer(fellow.Id, fellow.Addr, b.handleRPC, cfg)
 		b.raftState.RegisterNode(fellow.Id)
+
+		fellow.mapMu.Lock()
+		if fellow.ReqMap == nil {
+			fellow.ReqMap = make(map[uint32]rpc.RpcPayload, 0)
+		}
+		fellow.mapMu.Unlock()
 	}
 
-	b.entries.Restore()
 	b.raftState.UpdateRole(core.RAFT_ROLE_FOLLOWER)
 }
 
@@ -192,7 +199,7 @@ func (b *Brain) handleAppendEntriesRequest(id string, req rpc.AppendEntriesReq) 
 func (b *Brain) handleAppendEntriesResult(id string, res rpc.AppendEntriesRes, relatedReq rpc.AppendEntriesReq) {
 	entries := core.DecodeAppendEntries(relatedReq.Entries)
 
-	b.raftState.GotAERes(id, res.Success, res.Term, relatedReq.PrevLogIndex+entries.Len())
+	b.raftState.GotAERes(id, res.Success, res.Term, relatedReq.PrevLogIndex+entries.Len(), b.entries.Copy())
 }
 
 func (b *Brain) handleStateActionReq(req rpc.StateActionReq) rpc.StateActionRes {

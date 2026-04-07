@@ -208,6 +208,27 @@ func TestGotAEReq(t *testing.T) {
 
 func TestGotAERes(t *testing.T) {
 	assert := assert.New(t)
+	ae := core.AppendEntries{
+		{},
+		{
+			Term: 1,
+		},
+		{
+			Term: 1,
+		},
+		{
+			Term: 1,
+		},
+		{
+			Term: 1,
+		},
+		{
+			Term: 1,
+		},
+		{
+			Term: 1,
+		},
+	}
 	// default role is Follower
 	rs := &core.RaftState{}
 
@@ -245,7 +266,7 @@ func TestGotAERes(t *testing.T) {
 	// - Term check should pass (same term)
 	// - Sakura's next index should be 2, she matches the log on index 1, that means the next log index the system should send should be 2 (match index +1)
 	// - Commit index stays untouched, no majority, or i should say 0 is still the majority (match index: 1 for sakura, 6 for leader, the rest is 0)
-	rs.GotAERes("sakura", true, rs.Term(), 1)
+	rs.GotAERes("sakura", true, rs.Term(), 1, ae)
 	assert.Equal(uint32(2), rs.NextIndex("sakura"), "sakura first next index incorrect")
 	assert.Equal(uint32(0), rs.CommitIdx(), "Commit index got updated unexpectedly after sakura update")
 
@@ -253,7 +274,7 @@ func TestGotAERes(t *testing.T) {
 	// - Term check should pass (same term)
 	// - hyj's next index should be 6, she matches the log on index 6, that means the next log index the system should send should be 7 (match index +1)
 	// - Commit index changed, majority established: 1 (match index: 1 for sakura, 6 for leader, 6 for hyj,  the rest is 0)
-	rs.GotAERes("hyj", true, rs.Term(), 6)
+	rs.GotAERes("hyj", true, rs.Term(), 6, ae)
 	assert.Equal(uint32(7), rs.NextIndex("hyj"), "hyj first next index incorrect")
 	assert.Equal(uint32(1), rs.CommitIdx(), "First commit index update incorrect")
 	select {
@@ -267,7 +288,7 @@ func TestGotAERes(t *testing.T) {
 	// - Term check should pass (same term)
 	// - kazyha's next index should be 6, init as 7, failure will cause next index to --
 	// - Commit index stays untouched, match indexes did not change
-	rs.GotAERes("kazuha", false, rs.Term(), 1)
+	rs.GotAERes("kazuha", false, rs.Term(), 1, ae)
 	assert.Equal(uint32(6), rs.NextIndex("kazuha"), "kazuha first next index incorrect")
 	assert.Equal(uint32(1), rs.CommitIdx(), "Commit index got updated unexpectedly after kazuha update")
 
@@ -275,7 +296,7 @@ func TestGotAERes(t *testing.T) {
 	// - Term check should pass (same term)
 	// - hec's next index should be 6, she matches the log on index 6, that means the next log index the system should send should be 7 (match index +1)
 	// - Commit index changed, majority established again: 6 (match index: 1 for sakura, 6 for leader, 6 for hyj, 6 for hec, kazuha is 0)
-	rs.GotAERes("hec", true, rs.Term(), 6)
+	rs.GotAERes("hec", true, rs.Term(), 6, ae)
 	assert.Equal(uint32(7), rs.NextIndex("hec"), "hec first next index incorrect")
 	assert.Equal(uint32(6), rs.CommitIdx(), "Second commit index update incorrect")
 	select {
@@ -286,7 +307,7 @@ func TestGotAERes(t *testing.T) {
 	}
 
 	// Term change
-	rs.GotAERes("kazuha", true, rs.Term()+1, 6)
+	rs.GotAERes("kazuha", true, rs.Term()+1, 6, ae)
 	assert.Equal(core.RAFT_ROLE_FOLLOWER, rs.Role(), "Should get demoted to follower")
 	select {
 	case event := <-rs.EventCh():
@@ -294,4 +315,93 @@ func TestGotAERes(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Unexpected no commit idx event")
 	}
+}
+
+func TestGotAEResTermRejection(t *testing.T) {
+	assert := assert.New(t)
+	ae := core.AppendEntries{
+		{},
+		{
+			Term: 1,
+		},
+		{
+			Term: 3,
+		},
+	}
+	// default role is Follower
+	rs := &core.RaftState{}
+	// start election will ++
+	rs.RestoreTerm(2)
+	assert.Equal(uint32(2), rs.Term(), "Term did not get restored")
+
+	ok := rs.UpdateRole(core.RAFT_ROLE_CANDIDATE)
+	assert.True(ok, "Unexpected error for updating raft role")
+	select {
+	case <-rs.EventCh():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Unexpected no event")
+	}
+
+	// well, leader is indeed the one and only kcw
+	rs.StartElection("kcw")
+	rs.RegisterNode("sakura")
+	rs.RegisterNode("hyj")
+	rs.RegisterNode("kazuha")
+	rs.RegisterNode("hec")
+
+	ok = rs.UpdateRole(core.RAFT_ROLE_LEADER)
+	assert.True(ok, "Unexpected error for updating raft role")
+	select {
+	case <-rs.EventCh():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Unexpected no event")
+	}
+
+	// Init:
+	// - Set all follower's next index to be last log index + 1, in this case 3
+	// - Set all follower's match index to be 0
+	// - Set leader's match index to be last log index
+	err := rs.InitAsLeader("kcw", 2)
+	assert.NoError(err, "Unexpected error for init as leader")
+
+	// First AE success:
+	// - Term check should pass (same term)
+	// - Sakura's next index should be 2, she matches the log on index 1, that means the next log index the system should send should be 2 (match index +1)
+	// - Commit index stays untouched, no majority, or i should say 0 is still the majority (match index: 1 for sakura, 2 for leader, the rest is 0)
+	rs.GotAERes("sakura", true, rs.Term(), 1, ae)
+	assert.Equal(uint32(2), rs.NextIndex("sakura"), "sakura first next index incorrect")
+	assert.Equal(uint32(0), rs.CommitIdx(), "Commit index got updated unexpectedly after sakura update")
+
+	// Second AE success:
+	// - Term check should pass (same term)
+	// - hyj's next index should be 2, she matches the log on index 1, that means the next log index the system should send should be 2 (match index +1)
+	// - Commit index should not change, although there are majority established: 1 (match index: 1 for sakura, 1 for hyj, 2 for leader, the rest is 0)
+	// - Log at index 1 has a smaller term, Raft specifies only current term logs can be committed, so no.
+	rs.GotAERes("hyj", true, rs.Term(), 1, ae)
+	assert.Equal(uint32(2), rs.NextIndex("hyj"), "hyj first next index incorrect")
+	assert.Equal(uint32(0), rs.CommitIdx(), "Commit index got updated unexpectedly after hyj update")
+
+	// Third AE success:
+	// - Term check should pass (same term)
+	// - kazuha's next index should be 3, she matches the log on index 2, that means the next log index the system should send should be 3 (match index +1)
+	// - Commit index should not change, although there are majority established: 1 (match index: 1 for sakura, 1 for hyj, 2 for kazuha, 2 for leader, hec is 0)
+	// - Log at index 1 has a smaller term, Raft specifies only current term logs can be committed, so no.
+	rs.GotAERes("kazuha", true, rs.Term(), 2, ae)
+	assert.Equal(uint32(3), rs.NextIndex("kazuha"), "kazuha first next index incorrect")
+	assert.Equal(uint32(0), rs.CommitIdx(), "Commit index got updated unexpectedly after kazuha update")
+
+	// Forth AE success:
+	// - Term check should pass (same term)
+	// - hec's next index should be 3, she matches the log on index 2, that means the next log index the system should send should be 3 (match index +1)
+	// - Commit index changed, majority established: 2 (match index: 1 for sakura, 1 for hyj, 2 for the rest)
+	rs.GotAERes("hec", true, rs.Term(), 2, ae)
+	assert.Equal(uint32(3), rs.NextIndex("hec"), "hec first next index incorrect")
+	assert.Equal(uint32(2), rs.CommitIdx(), "Commit index update incorrect")
+	select {
+	case event := <-rs.EventCh():
+		assert.Equal(core.RAFT_STATE_EVENT_COMMIT_IDX_CHANGE, event, "second commit idx event not received")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Unexpected no commit idx event")
+	}
+
 }
