@@ -74,7 +74,7 @@ func (b *Brain) Start(cfg core.TransportCfg) {
 	go b.handleStateEvent()
 
 	// initiate connection for rpc request FROM this node and response for that request
-	b.deps.Transport.RegisterSelf(b.addr, b.handleRPC, cfg)
+	b.deps.Transport.RegisterSelf(b.id, b.addr, b.handleRPC, cfg)
 	b.l.Debug("registered self transport", "node_id", b.id, "addr", b.addr)
 
 	// initiate connection for rpc request TO this node and response for that request
@@ -98,7 +98,7 @@ func (b *Brain) Start(cfg core.TransportCfg) {
 func (b *Brain) handleRPC(id string, bs []byte) {
 	frame := rpc.DecodeRPCFrame(bs)
 	fellow, ok := b.fellows[id]
-	if !ok {
+	if id != b.id && !ok {
 		b.l.Warn("received RPC from unknown peer, ignoring", "node_id", b.id, "peer_id", id)
 		return
 	}
@@ -195,7 +195,7 @@ func (b *Brain) handleVoteResult(id string, res rpc.RequestVoteRes) {
 	b.raftState.GotVote(res.VoteGranted, res.Term)
 }
 
-func (b *Brain) handleAppendEntriesRequest(id string, req rpc.AppendEntriesReq) rpc.AppendEntriesRes {
+func (b *Brain) handleAppendEntriesRequest(_ string, req rpc.AppendEntriesReq) rpc.AppendEntriesRes {
 	b.l.Debug("handling AE request", "node_id", b.id, "leader_id", req.LeaderId, "term", req.Term, "prev_log_index", req.PrevLogIndex, "prev_log_term", req.PrevLogTerm, "leader_commit", req.LeaderCommit)
 
 	if req.Term < b.raftState.Term() {
@@ -442,6 +442,11 @@ func (b *Brain) electionLoop() {
 		select {
 		case <-b.deps.ElectionTimer.C():
 			b.l.Debug("election timer expired, no winner yet", "node_id", b.id, "term", b.raftState.Term())
+			err := b.raftState.StopElection()
+			if err != nil {
+				b.l.Error("failed to stop election", "node_id", b.id, "error", err)
+				return
+			}
 		case <-b.deps.ElectionTimer.S():
 			b.l.Debug("election timer stopped, exiting election loop", "node_id", b.id)
 			return

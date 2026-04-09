@@ -45,6 +45,7 @@ type RaftState struct {
 
 	// candidate / election related
 	votedFor     string
+	// used for checking if follower voted for current term
 	votedForTerm uint32
 	voteCount    uint32
 }
@@ -202,6 +203,8 @@ func (rs *RaftState) GotVote(voteGranted bool, followerTerm uint32) {
 
 	if followerTerm > rs.term {
 		rs.term = followerTerm
+		rs.votedFor = ""
+		rs.voteCount = 0
 		rs.updateRole(RAFT_ROLE_FOLLOWER)
 		return
 	}
@@ -219,6 +222,8 @@ func (rs *RaftState) IsVoted() bool {
 	rs.mu.RLock()
 	defer rs.mu.RUnlock()
 
+	// 1. votedForTerm == term: it means follower / candidate voted for the current term
+	// 2. votedFor != "": follower / candidate voted for someone, it will reset after receiving the first AE (which also infer the election is over)
 	return rs.votedForTerm == rs.term && rs.votedFor != ""
 }
 
@@ -235,7 +240,7 @@ func (rs *RaftState) GotAEReq(id string, term uint32, newCommitIdx uint32, lastL
 		rs.updateRole(RAFT_ROLE_FOLLOWER)
 	}
 
-	// election ended
+	// Valid AE also infers election ended
 	rs.leaderId = id
 	rs.votedFor = ""
 

@@ -12,6 +12,7 @@ type Transport struct {
 	once sync.Once
 
 	connMap   map[string]*Conn
+	selfId    string
 	ListenGcf GetConnFunc
 	DialGcf   GetConnFunc
 }
@@ -27,22 +28,22 @@ func (t *Transport) Send(id string, bs []byte) error {
 	return t.connMap[id].Write(bs)
 }
 
-func (t *Transport) RegisterSelf(addr string, th core.TransportHandler, cfg core.TransportCfg) error {
+func (t *Transport) RegisterSelf(id string, addr string, th core.TransportHandler, cfg core.TransportCfg) error {
 	t.setupMap()
-	if _, ok := t.connMap["self"]; ok {
+	if _, ok := t.connMap[id]; ok {
 		return errors.New("Self registered")
 	}
 
-	t.connMap["self"] = &Conn{
-		Addr: addr,
-		Gcf:  t.ListenGcf,
-		Now:  time.Now,
-		ReadDln: cfg.ReadDln,
+	t.connMap[id] = &Conn{
+		Addr:     addr,
+		Gcf:      t.ListenGcf,
+		Now:      time.Now,
+		ReadDln:  cfg.ReadDln,
 		WriteDln: cfg.WriteDln,
 	}
 
-	go t.connMap["self"].Start()
-	go t.handleRead("self", th)
+	go t.connMap[id].Start()
+	go t.handleRead(id, th)
 
 	return nil
 }
@@ -53,10 +54,10 @@ func (t *Transport) RegisterPeer(id string, addr string, th core.TransportHandle
 		return errors.New("Id registered")
 	}
 	t.connMap[id] = &Conn{
-		Addr: addr,
-		Gcf:  t.DialGcf,
-		Now:  time.Now,
-		ReadDln: cfg.ReadDln,
+		Addr:     addr,
+		Gcf:      t.DialGcf,
+		Now:      time.Now,
+		ReadDln:  cfg.ReadDln,
 		WriteDln: cfg.WriteDln,
 	}
 

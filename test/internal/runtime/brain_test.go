@@ -34,19 +34,8 @@ import (
 // 6. Send AE with correct Param
 func TestCandidatePromotion(t *testing.T) {
 	b := giveMeATestBrain(3)
-	b.FakeStore.Saved = core.AppendEntries{
-		{
-			Term: 1,
-		},
-		{
-			Term: 2,
-		},
-		{
-			Term: 3,
-		},
-	}
 
-	reqVotReq := rpc.Frame{
+	reqVoteReq := rpc.Frame{
 		RPCType: rpc.RPC_TYPE_REQUEST_VOTE_REQ,
 		// First request, should be 1
 		RelationId: 1,
@@ -57,6 +46,7 @@ func TestCandidatePromotion(t *testing.T) {
 			LastLogTerm:  b.FakeStore.Saved.LatestLog().Term,
 		}.Encode(),
 	}.Encode()
+
 	reqVoteRes := rpc.Frame{
 		RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
 		RelationId: 1,
@@ -65,6 +55,7 @@ func TestCandidatePromotion(t *testing.T) {
 			VoteGranted: true,
 		}.Encode(),
 	}.Encode()
+
 	appEntReq := rpc.Frame{
 		RPCType:    rpc.RPC_TYPE_APPEND_ENTRIES_REQ,
 		RelationId: 2,
@@ -82,7 +73,7 @@ func TestCandidatePromotion(t *testing.T) {
 		startBrain(),
 		passTime("ElectionTimeoutTimer"),
 		passTime("WaitForElectionTimer"),
-		checkBroadcastedRpc("Request Vote Req", reqVotReq),
+		checkBroadcastedRpc("Request Vote Req", reqVoteReq),
 		broadcastInboundRpc("Request Vote Res", reqVoteRes, -1),
 		checkBroadcastedRpc("Append Entries Request", appEntReq),
 	})
@@ -91,17 +82,6 @@ func TestCandidatePromotion(t *testing.T) {
 func TestCandidateDemotion(t *testing.T) {
 	t.Run("Lost Election", func(t *testing.T) {
 		b := giveMeATestBrain(3)
-		b.FakeStore.Saved = core.AppendEntries{
-			{
-				Term: 1,
-			},
-			{
-				Term: 2,
-			},
-			{
-				Term: 3,
-			},
-		}
 
 		appEntReq := rpc.Frame{
 			RPCType:    rpc.RPC_TYPE_APPEND_ENTRIES_REQ,
@@ -111,7 +91,7 @@ func TestCandidateDemotion(t *testing.T) {
 				LeaderCommit: 0,
 				PrevLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
 				PrevLogTerm:  b.FakeStore.Saved.LatestLog().Term,
-				LeaderId:     b.BrainCfg.Id,
+				LeaderId:     b.Fellows[0].Id,
 				Entries:      []byte{},
 			}.Encode(),
 		}.Encode()
@@ -127,27 +107,16 @@ func TestCandidateDemotion(t *testing.T) {
 
 		run(t, b, []testStep{
 			startBrain(),
-			passTime("ElectionTimeoutTimer"), // After election timeout, it became candidate. It still got to wait for the election to start on its end
-			sendInboundRpc("Append Entries Req", b.Fellows[0].Id, appEntReq),   // Larger term AE, should trigger demote
-			checkOutboundRpc("Append Entries Res", b.Fellows[0].Id, appEntRes), // Demoted, hence success
+			passTime("ElectionTimeoutTimer"),                // After election timeout, it became candidate. It still got to wait for the election to start on its end
+			sendInboundRpc("Append Entries Req", appEntReq), // Larger term AE, should trigger demote
+			checkOutboundRpc("Append Entries Res", appEntRes), // Demoted, hence success
 		})
 	})
 
 	t.Run("Request Vote Response Term Bigger", func(t *testing.T) {
 		b := giveMeATestBrain(3)
-		b.FakeStore.Saved = core.AppendEntries{
-			{
-				Term: 1,
-			},
-			{
-				Term: 2,
-			},
-			{
-				Term: 3,
-			},
-		}
 
-		broadCastReqVotReq := rpc.Frame{
+		broadCastReqVoteReq := rpc.Frame{
 			RPCType: rpc.RPC_TYPE_REQUEST_VOTE_REQ,
 			// First request, should be 1
 			RelationId: 1,
@@ -158,6 +127,7 @@ func TestCandidateDemotion(t *testing.T) {
 				LastLogTerm:  b.FakeStore.Saved.LatestLog().Term,
 			}.Encode(),
 		}.Encode()
+
 		inboundReqVoteRes := rpc.Frame{
 			RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
 			RelationId: 1,
@@ -167,7 +137,7 @@ func TestCandidateDemotion(t *testing.T) {
 			}.Encode(),
 		}.Encode()
 
-		inboundReqVotReq := rpc.Frame{
+		inboundReqVoteReq := rpc.Frame{
 			RPCType: rpc.RPC_TYPE_REQUEST_VOTE_REQ,
 			// First request, should be 1
 			RelationId: 1,
@@ -178,6 +148,7 @@ func TestCandidateDemotion(t *testing.T) {
 				LastLogTerm:  b.FakeStore.Saved.LatestLog().Term,
 			}.Encode(),
 		}.Encode()
+
 		outBoundReqVoteRes := rpc.Frame{
 			RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
 			RelationId: 1,
@@ -191,15 +162,143 @@ func TestCandidateDemotion(t *testing.T) {
 			startBrain(),
 			passTime("ElectionTimeoutTimer"),
 			passTime("WaitForElectionTimer"),
-			checkBroadcastedRpc("Request Vote Req", broadCastReqVotReq),
-			sendInboundRpc("Request Vote Res", b.Fellows[0].Id, inboundReqVoteRes), // Demote to follower
-			sendInboundRpc("Request Vote Req", b.Fellows[0].Id, inboundReqVotReq),
-			checkOutboundRpc("Request Vote Res", b.Fellows[0].Id, outBoundReqVoteRes), // This should return success, coz demotion should reset and allow follower to vote again
+			checkBroadcastedRpc("Request Vote Req", broadCastReqVoteReq),
+			sendInboundRpc("Request Vote Res", inboundReqVoteRes), // Demote to follower
+			sendInboundRpc("Request Vote Req", inboundReqVoteReq),
+			checkOutboundRpc("Request Vote Res", outBoundReqVoteRes), // This should return success, coz demotion should reset and allow follower to vote again
 		})
 	})
 }
 
 func TestRestartElection_AsCandidate(t *testing.T) {
+	t.Run("Won election after restart", func(t *testing.T) {
+		b := giveMeATestBrain(5)
+
+		firstRoundBroadcastReqVoteReq := rpc.Frame{
+			RPCType: rpc.RPC_TYPE_REQUEST_VOTE_REQ,
+			// First request, should be 1
+			RelationId: 1,
+			Payload: rpc.RequestVoteReq{
+				Term:         b.FakeStore.Saved.LatestLog().Term + 1,
+				CandidateId:  b.BrainCfg.Id,
+				LastLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
+				LastLogTerm:  b.FakeStore.Saved.LatestLog().Term,
+			}.Encode(),
+		}.Encode()
+
+		firstRoundInboundReqVoteRes := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
+			RelationId: 1,
+			Payload: rpc.RequestVoteRes{
+				Term:        b.FakeStore.Saved.LatestLog().Term + 1,
+				VoteGranted: true,
+			}.Encode(),
+		}.Encode()
+
+		secondRoundBroadcastReqVoteReq := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_REQ,
+			RelationId: 2,
+			Payload: rpc.RequestVoteReq{
+				Term:         b.FakeStore.Saved.LatestLog().Term + 2,
+				CandidateId:  b.BrainCfg.Id,
+				LastLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
+				LastLogTerm:  b.FakeStore.Saved.LatestLog().Term,
+			}.Encode(),
+		}.Encode()
+
+		secondRoundInboundReqVoteRes := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
+			RelationId: 2,
+			Payload: rpc.RequestVoteRes{
+				Term:        b.FakeStore.Saved.LatestLog().Term + 2,
+				VoteGranted: true,
+			}.Encode(),
+		}.Encode()
+
+		appEntReq := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_APPEND_ENTRIES_REQ,
+			RelationId: 3,
+			Payload: rpc.AppendEntriesReq{
+				Term:         b.FakeStore.Saved.LatestLog().Term + 2,
+				LeaderCommit: 0,
+				PrevLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
+				PrevLogTerm:  b.FakeStore.Saved.LatestLog().Term,
+				LeaderId:     b.BrainCfg.Id,
+				Entries:      []byte{},
+			}.Encode(),
+		}.Encode()
+
+		run(t, b, []testStep{
+			startBrain(),
+			passTime("ElectionTimeoutTimer"),
+			passTime("WaitForElectionTimer"),
+			checkBroadcastedRpc("First Round Request Vote Req", firstRoundBroadcastReqVoteReq),
+			sendInboundRpc("First Round Request Vote Res", firstRoundInboundReqVoteRes), // One vote, not enough
+			passTime("ElectionTimer"), // Restart Election
+			passTime("WaitForElectionTimer"),
+			checkBroadcastedRpc("Second Round Request Vote Req", secondRoundBroadcastReqVoteReq),
+			sendInboundRpc("Second Round Request Vote Res #1", secondRoundInboundReqVoteRes), // One vote, not enough
+			sendInboundRpc("Second Round Request Vote Res #2", secondRoundInboundReqVoteRes), // Second vote, should promote
+			checkBroadcastedRpc("Append Entries Req", appEntReq),
+		})
+	})
+
+	t.Run("Vote for someone after restart", func(t *testing.T) {
+		b := giveMeATestBrain(5)
+
+		firstRoundBroadcastReqVoteReq := rpc.Frame{
+			RPCType: rpc.RPC_TYPE_REQUEST_VOTE_REQ,
+			// First request, should be 1
+			RelationId: 1,
+			Payload: rpc.RequestVoteReq{
+				Term:         b.FakeStore.Saved.LatestLog().Term + 1,
+				CandidateId:  b.BrainCfg.Id,
+				LastLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
+				LastLogTerm:  b.FakeStore.Saved.LatestLog().Term,
+			}.Encode(),
+		}.Encode()
+
+		firstRoundInboundReqVoteRes := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
+			RelationId: 1,
+			Payload: rpc.RequestVoteRes{
+				Term:        b.FakeStore.Saved.LatestLog().Term + 1,
+				VoteGranted: true,
+			}.Encode(),
+		}.Encode()
+
+		inboundReqVoteReq := rpc.Frame{
+			RPCType: rpc.RPC_TYPE_REQUEST_VOTE_REQ,
+			// First request, should be 1
+			RelationId: 1,
+			Payload: rpc.RequestVoteReq{
+				Term:         b.FakeStore.Saved.LatestLog().Term + 2,
+				CandidateId:  b.Fellows[1].Id,
+				LastLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
+				LastLogTerm:  b.FakeStore.Saved.LatestLog().Term,
+			}.Encode(),
+		}.Encode()
+
+		outBoundReqVoteRes := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
+			RelationId: 1,
+			Payload: rpc.RequestVoteRes{
+				Term:        b.FakeStore.Saved.LatestLog().Term + 2,
+				VoteGranted: true,
+			}.Encode(),
+		}.Encode()
+
+		run(t, b, []testStep{
+			startBrain(),
+			passTime("ElectionTimeoutTimer"),
+			passTime("WaitForElectionTimer"),
+			checkBroadcastedRpc("First Round Request Vote Req", firstRoundBroadcastReqVoteReq),
+			sendInboundRpc("First Round Request Vote Res", firstRoundInboundReqVoteRes), // One vote, not enough
+			passTime("ElectionTimer"), // Restart Election
+			sendInboundRpc("Request Vote Req", inboundReqVoteReq),
+			checkOutboundRpc("Request Vote Req", outBoundReqVoteRes),
+		})
+	})
 }
 
 func TestRestartElection_AsFollower(t *testing.T) {
@@ -233,7 +332,19 @@ func giveMeATestBrain(quorumCount int) *testBrain {
 	ftr := &fakeTransport{
 		ConnMap: make(map[string]*fakeConn),
 	}
-	fs := &fakeStore{}
+	fs := &fakeStore{
+		Saved: core.AppendEntries{
+			{
+				Term: 1,
+			},
+			{
+				Term: 2,
+			},
+			{
+				Term: 3,
+			},
+		},
+	}
 	now := time.Now()
 	deps := &runtime.BrainDeps{
 		ElectionTimer: &fakeTimer{
@@ -358,7 +469,7 @@ func checkBroadcastedRpc(rpc string, bs []byte) testStep {
 			ok := true
 
 			for id, conn := range b.FakeTransport.ConnMap {
-				if id == "self" {
+				if id == b.FakeTransport.SelfId {
 					continue
 				}
 				// Ensure the write comes through, since we can't be sure the timing
@@ -389,11 +500,12 @@ func broadcastInboundRpc(rpc string, bs []byte, limit int) testStep {
 			ass.Equal(len(b.BrainCfg.Fellows)+1, len(b.FakeTransport.ConnMap), "Fellow not regiestered")
 
 			idx := 0
-			for id, conn := range b.FakeTransport.ConnMap {
-				if id == "self" {
+			selfConn := b.FakeTransport.ConnMap[b.FakeTransport.SelfId]
+			for id := range b.FakeTransport.ConnMap {
+				if id == b.FakeTransport.SelfId {
 					continue
 				}
-				conn.AddReadBuf(bs)
+				selfConn.AddReadBuf(bs)
 				idx++
 				if limit > 0 && idx >= limit {
 					break
@@ -405,15 +517,15 @@ func broadcastInboundRpc(rpc string, bs []byte, limit int) testStep {
 	}
 }
 
-func sendInboundRpc(rpc string, from string, bs []byte) testStep {
+func sendInboundRpc(rpc string, bs []byte) testStep {
 	return testStep{
 		Name: fmt.Sprintf("Send Inbound RPC: %s", rpc),
 		F: func(ass *assert.Assertions, b *testBrain) bool {
 			ass.Equal(len(b.BrainCfg.Fellows)+1, len(b.FakeTransport.ConnMap), "Fellow not regiestered")
 
-			conn, ok := b.FakeTransport.ConnMap[from]
+			conn, ok := b.FakeTransport.ConnMap[b.FakeTransport.SelfId]
 			if !ok {
-				ass.Failf("Send Inbound RPC", "Either you messed up, or the brain did not register this id: %s", from)
+				ass.Failf("Send Inbound RPC", "Either you messed up, or the brain did not register this id: %s", "self")
 				return false
 			}
 
@@ -423,15 +535,15 @@ func sendInboundRpc(rpc string, from string, bs []byte) testStep {
 	}
 }
 
-func checkOutboundRpc(rpc string, from string, bs []byte) testStep {
+func checkOutboundRpc(rpc string, bs []byte) testStep {
 	return testStep{
 		Name: fmt.Sprintf("Check Outbound RPC: %s", rpc),
 		F: func(ass *assert.Assertions, b *testBrain) bool {
 			ass.Equal(len(b.BrainCfg.Fellows)+1, len(b.FakeTransport.ConnMap), "Fellow not regiestered")
 
-			conn, ok := b.FakeTransport.ConnMap[from]
+			conn, ok := b.FakeTransport.ConnMap[b.FakeTransport.SelfId]
 			if !ok {
-				ass.Failf("Check Outbound RPC", "Either you messed up, or the brain did not register this id: %s", from)
+				ass.Failf("Check Outbound RPC", "Either you messed up, or the brain did not register this id: %s", b.FakeTransport.SelfId)
 				return false
 			}
 
@@ -441,13 +553,13 @@ func checkOutboundRpc(rpc string, from string, bs []byte) testStep {
 			case <-conn.WrittenCh:
 			case <-time.After(3 * time.Second):
 				ok = false
-				ass.Failf("Check Outbound RPC", "Timer expired for %s", from)
+				ass.Failf("Check Outbound RPC", "Timer expired for %s", b.FakeTransport.SelfId)
 			}
-			ass.Equalf(0, len(conn.WrittenCh), "Unexpected write for %s", from)
+			ass.Equalf(0, len(conn.WrittenCh), "Unexpected write for %s", b.FakeTransport.SelfId)
 
 			if diff := cmp.Diff(bs, conn.ClearWriteBuff()); diff != "" {
 				ok = false
-				ass.Failf("Check Outbound RPC", "TestBs mismatch for %s (-want +got):\n%s", from, diff)
+				ass.Failf("Check Outbound RPC", "TestBs mismatch for %s (-want +got):\n%s", b.FakeTransport.SelfId, diff)
 			}
 			return true
 		},
@@ -466,6 +578,7 @@ type testBrain struct {
 
 type fakeTransport struct {
 	ConnMap map[string]*fakeConn
+	SelfId  string
 }
 
 func (t *fakeTransport) Send(id string, bs []byte) error {
@@ -481,18 +594,19 @@ func (t *fakeTransport) Send(id string, bs []byte) error {
 	return err
 }
 
-func (t *fakeTransport) RegisterSelf(addr string, th core.TransportHandler, cfg core.TransportCfg) error {
-	if _, ok := t.ConnMap["self"]; ok {
+func (t *fakeTransport) RegisterSelf(id string, addr string, th core.TransportHandler, cfg core.TransportCfg) error {
+	if _, ok := t.ConnMap[id]; ok {
 		return errors.New("Self registered")
 	}
+	t.SelfId = id
 
-	t.ConnMap["self"] = &fakeConn{
+	t.ConnMap[t.SelfId] = &fakeConn{
 		WriteBuf:  make([]byte, 0),
 		readCh:    make(chan []byte, 100),
 		WrittenCh: make(chan struct{}, 100),
 	}
 
-	go t.handleRead("self", th)
+	go t.handleRead(t.SelfId, th)
 
 	return nil
 }
@@ -593,7 +707,7 @@ func (f *fakeTimer) PassTime() {
 
 type fakeConn struct {
 	writeMu sync.Mutex
-	readCh chan []byte
+	readCh  chan []byte
 
 	ReadDln   time.Time
 	WriteDln  time.Time
