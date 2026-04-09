@@ -131,6 +131,20 @@ func (rs *RaftState) StartElection(id string) error {
 	return nil
 }
 
+func (rs *RaftState) StopElection() error {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	if rs.role != RAFT_ROLE_CANDIDATE {
+		return errors.New("Not a candidate")
+	}
+
+	rs.votedFor = ""
+	rs.voteCount = 0
+
+	return nil
+}
+
 func (rs *RaftState) InitAsLeader(id string, latestLogIdx uint32) error {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
@@ -335,6 +349,9 @@ func (rs *RaftState) ResetIndexes(nextIndex uint32) {
 }
 
 func (rs *RaftState) updateRole(role uint) {
+	if rs.role == role {
+		return
+	}
 	rs.role = role
 	if rs.eventCh == nil {
 		rs.eventCh = make(chan RaftStateEvent, 1000)
