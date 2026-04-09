@@ -33,8 +33,8 @@ import (
 // 6. Wait for heartbeat timer
 // 6. Send AE with correct Param
 func TestCandidatePromotion(t *testing.T) {
-	tb := giveMeATestBrain(3)
-	tb.FakeStore.Saved = core.AppendEntries{
+	b := giveMeATestBrain(3)
+	b.FakeStore.Saved = core.AppendEntries{
 		{
 			Term: 1,
 		},
@@ -51,17 +51,17 @@ func TestCandidatePromotion(t *testing.T) {
 		// First request, should be 1
 		RelationId: 1,
 		Payload: rpc.RequestVoteReq{
-			Term:         tb.FakeStore.Saved.LatestLog().Term + 1,
-			CandidateId:  tb.BrainCfg.Id,
-			LastLogIndex: tb.FakeStore.Saved.LatestIdx() + 1,
-			LastLogTerm:  tb.FakeStore.Saved.LatestLog().Term,
+			Term:         b.FakeStore.Saved.LatestLog().Term + 1,
+			CandidateId:  b.BrainCfg.Id,
+			LastLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
+			LastLogTerm:  b.FakeStore.Saved.LatestLog().Term,
 		}.Encode(),
 	}.Encode()
 	reqVoteRes := rpc.Frame{
 		RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
 		RelationId: 1,
 		Payload: rpc.RequestVoteRes{
-			Term:        tb.FakeStore.Saved.LatestLog().Term + 1,
+			Term:        b.FakeStore.Saved.LatestLog().Term + 1,
 			VoteGranted: true,
 		}.Encode(),
 	}.Encode()
@@ -69,16 +69,16 @@ func TestCandidatePromotion(t *testing.T) {
 		RPCType:    rpc.RPC_TYPE_APPEND_ENTRIES_REQ,
 		RelationId: 2,
 		Payload: rpc.AppendEntriesReq{
-			Term:         tb.FakeStore.Saved.LatestLog().Term + 1,
+			Term:         b.FakeStore.Saved.LatestLog().Term + 1,
 			LeaderCommit: 0,
-			PrevLogIndex: tb.FakeStore.Saved.LatestIdx() + 1,
-			PrevLogTerm:  tb.FakeStore.Saved.LatestLog().Term,
-			LeaderId:     tb.BrainCfg.Id,
+			PrevLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
+			PrevLogTerm:  b.FakeStore.Saved.LatestLog().Term,
+			LeaderId:     b.BrainCfg.Id,
 			Entries:      []byte{},
 		}.Encode(),
 	}.Encode()
 
-	run(t, tb, []testStep{
+	run(t, b, []testStep{
 		startBrain(),
 		passTime("ElectionTimeoutTimer"),
 		passTime("WaitForElectionTimer"),
@@ -89,12 +89,9 @@ func TestCandidatePromotion(t *testing.T) {
 }
 
 func TestCandidateDemotion(t *testing.T) {
-	// Lost election
-	// RVRes term larger
 	t.Run("Lost Election", func(t *testing.T) {
-		t.Parallel()
-		tb := giveMeATestBrain(3)
-		tb.FakeStore.Saved = core.AppendEntries{
+		b := giveMeATestBrain(3)
+		b.FakeStore.Saved = core.AppendEntries{
 			{
 				Term: 1,
 			},
@@ -110,11 +107,11 @@ func TestCandidateDemotion(t *testing.T) {
 			RPCType:    rpc.RPC_TYPE_APPEND_ENTRIES_REQ,
 			RelationId: 2,
 			Payload: rpc.AppendEntriesReq{
-				Term:         tb.FakeStore.Saved.LatestLog().Term + 1,
+				Term:         b.FakeStore.Saved.LatestLog().Term + 1,
 				LeaderCommit: 0,
-				PrevLogIndex: tb.FakeStore.Saved.LatestIdx() + 1,
-				PrevLogTerm:  tb.FakeStore.Saved.LatestLog().Term,
-				LeaderId:     tb.BrainCfg.Id,
+				PrevLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
+				PrevLogTerm:  b.FakeStore.Saved.LatestLog().Term,
+				LeaderId:     b.BrainCfg.Id,
 				Entries:      []byte{},
 			}.Encode(),
 		}.Encode()
@@ -123,28 +120,89 @@ func TestCandidateDemotion(t *testing.T) {
 			RPCType:    rpc.RPC_TYPE_APPEND_ENTRIES_RES,
 			RelationId: 2,
 			Payload: rpc.AppendEntriesRes{
-				Term:    tb.FakeStore.Saved.LatestLog().Term + 1,
+				Term:    b.FakeStore.Saved.LatestLog().Term + 1,
 				Success: true,
 			}.Encode(),
 		}.Encode()
 
-		run(t, tb, []testStep{
+		run(t, b, []testStep{
 			startBrain(),
 			passTime("ElectionTimeoutTimer"), // After election timeout, it became candidate. It still got to wait for the election to start on its end
-			sendInboundRpc("Append Entries Req", tb.Fellows[0].Id, appEntReq),   // Larger term AE, should trigger demote
-			checkOutboundRpc("Append Entries Res", tb.Fellows[0].Id, appEntRes), // Demoted, hence success
+			sendInboundRpc("Append Entries Req", b.Fellows[0].Id, appEntReq),   // Larger term AE, should trigger demote
+			checkOutboundRpc("Append Entries Res", b.Fellows[0].Id, appEntRes), // Demoted, hence success
 		})
 	})
 
 	t.Run("Request Vote Response Term Bigger", func(t *testing.T) {
-		t.Parallel()
+		b := giveMeATestBrain(3)
+		b.FakeStore.Saved = core.AppendEntries{
+			{
+				Term: 1,
+			},
+			{
+				Term: 2,
+			},
+			{
+				Term: 3,
+			},
+		}
+
+		broadCastReqVotReq := rpc.Frame{
+			RPCType: rpc.RPC_TYPE_REQUEST_VOTE_REQ,
+			// First request, should be 1
+			RelationId: 1,
+			Payload: rpc.RequestVoteReq{
+				Term:         b.FakeStore.Saved.LatestLog().Term + 1,
+				CandidateId:  b.BrainCfg.Id,
+				LastLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
+				LastLogTerm:  b.FakeStore.Saved.LatestLog().Term,
+			}.Encode(),
+		}.Encode()
+		inboundReqVoteRes := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
+			RelationId: 1,
+			Payload: rpc.RequestVoteRes{
+				Term:        b.FakeStore.Saved.LatestLog().Term + 2,
+				VoteGranted: false,
+			}.Encode(),
+		}.Encode()
+
+		inboundReqVotReq := rpc.Frame{
+			RPCType: rpc.RPC_TYPE_REQUEST_VOTE_REQ,
+			// First request, should be 1
+			RelationId: 1,
+			Payload: rpc.RequestVoteReq{
+				Term:         b.FakeStore.Saved.LatestLog().Term + 2,
+				CandidateId:  b.Fellows[0].Id,
+				LastLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
+				LastLogTerm:  b.FakeStore.Saved.LatestLog().Term,
+			}.Encode(),
+		}.Encode()
+		outBoundReqVoteRes := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
+			RelationId: 1,
+			Payload: rpc.RequestVoteRes{
+				Term:        b.FakeStore.Saved.LatestLog().Term + 2,
+				VoteGranted: true,
+			}.Encode(),
+		}.Encode()
+
+		run(t, b, []testStep{
+			startBrain(),
+			passTime("ElectionTimeoutTimer"),
+			passTime("WaitForElectionTimer"),
+			checkBroadcastedRpc("Request Vote Req", broadCastReqVotReq),
+			sendInboundRpc("Request Vote Res", b.Fellows[0].Id, inboundReqVoteRes), // Demote to follower
+			sendInboundRpc("Request Vote Req", b.Fellows[0].Id, inboundReqVotReq),
+			checkOutboundRpc("Request Vote Res", b.Fellows[0].Id, outBoundReqVoteRes), // This should return success, coz demotion should reset and allow follower to vote again
+		})
 	})
 }
 
-func TestTiedVote_AsCandidate(t *testing.T) {
+func TestRestartElection_AsCandidate(t *testing.T) {
 }
 
-func TestTiedVote_AsFollower(t *testing.T) {
+func TestRestartElection_AsFollower(t *testing.T) {
 }
 
 func TestLeaderDemotion(t *testing.T) {
@@ -429,11 +487,9 @@ func (t *fakeTransport) RegisterSelf(addr string, th core.TransportHandler, cfg 
 	}
 
 	t.ConnMap["self"] = &fakeConn{
-		ReadBuf:   make([]byte, 0),
 		WriteBuf:  make([]byte, 0),
-		ReadCh:    make(chan struct{}, 100),
+		readCh:    make(chan []byte, 100),
 		WrittenCh: make(chan struct{}, 100),
-		Cond:      sync.NewCond(&sync.Mutex{}),
 	}
 
 	go t.handleRead("self", th)
@@ -446,11 +502,9 @@ func (t *fakeTransport) RegisterPeer(id string, addr string, th core.TransportHa
 		return errors.New("Id registered")
 	}
 	t.ConnMap[id] = &fakeConn{
-		ReadBuf:   make([]byte, 0),
 		WriteBuf:  make([]byte, 0),
-		ReadCh:    make(chan struct{}, 100),
+		readCh:    make(chan []byte, 100),
 		WrittenCh: make(chan struct{}, 100),
-		Cond:      sync.NewCond(&sync.Mutex{}),
 	}
 
 	go t.handleRead(id, th)
@@ -538,37 +592,24 @@ func (f *fakeTimer) PassTime() {
 }
 
 type fakeConn struct {
-	Cond    *sync.Cond
 	writeMu sync.Mutex
+	readCh chan []byte
 
 	ReadDln   time.Time
 	WriteDln  time.Time
-	ReadBuf   []byte
 	WriteBuf  []byte
-	ReadCh    chan struct{}
 	WrittenCh chan struct{}
 }
 
 func (f *fakeConn) AddReadBuf(b []byte) {
-	f.Cond.L.Lock()
-	defer f.Cond.L.Unlock()
-	defer f.Cond.Broadcast()
-
-	f.ReadBuf = append(f.ReadBuf, b...)
+	f.readCh <- b
 }
 
 func (f *fakeConn) Read() ([]byte, error) {
-	f.Cond.L.Lock()
-	defer f.Cond.L.Unlock()
+	buf := <-f.readCh
 
-	for len(f.ReadBuf) == 0 {
-		f.Cond.Wait()
-	}
-
-	bs := make([]byte, len(f.ReadBuf))
-	copy(bs, f.ReadBuf)
-	f.ReadBuf = make([]byte, 0)
-	f.ReadCh <- struct{}{}
+	bs := make([]byte, len(buf))
+	copy(bs, buf)
 
 	return bs, nil
 }
