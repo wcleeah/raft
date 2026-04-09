@@ -2,6 +2,7 @@ package runtime_test
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -31,8 +32,7 @@ import (
 // 5. Receive vote from majority, become leader
 // 6. Wait for heartbeat timer
 // 6. Send AE with correct Param
-func TestPromoteToLeader(t *testing.T) {
-	ass := assert.New(t)
+func TestCandidatePromotion(t *testing.T) {
 	tb := giveMeATestBrain(3)
 	tb.FakeStore.Saved = core.AppendEntries{
 		{
@@ -78,29 +78,91 @@ func TestPromoteToLeader(t *testing.T) {
 		}.Encode(),
 	}.Encode()
 
-	run(t, ass, tb, []testStep{
-		startBrain,
-		passTime(tb.Deps.ElectionTimeoutTimer),
-		passTime(tb.Deps.WaitForElectionTimer),
-		checkOutboundRpc(reqVotReq),
-		sendInboundRpc([][]byte{reqVoteRes}),
-		checkOutboundRpc(appEntReq),
+	run(t, tb, []testStep{
+		startBrain(),
+		passTime("ElectionTimeoutTimer"),
+		passTime("WaitForElectionTimer"),
+		checkBroadcastedRpc("Request Vote Req", reqVotReq),
+		broadcastInboundRpc("Request Vote Res", reqVoteRes, -1),
+		checkBroadcastedRpc("Append Entries Request", appEntReq),
 	})
 }
 
-func TestTiedVote_Promoted(t *testing.T) {
+func TestCandidateDemotion(t *testing.T) {
+	// Lost election
+	// RVRes term larger
+	t.Run("Lost Election", func(t *testing.T) {
+		t.Parallel()
+		tb := giveMeATestBrain(3)
+		tb.FakeStore.Saved = core.AppendEntries{
+			{
+				Term: 1,
+			},
+			{
+				Term: 2,
+			},
+			{
+				Term: 3,
+			},
+		}
+
+		appEntReq := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_APPEND_ENTRIES_REQ,
+			RelationId: 2,
+			Payload: rpc.AppendEntriesReq{
+				Term:         tb.FakeStore.Saved.LatestLog().Term + 1,
+				LeaderCommit: 0,
+				PrevLogIndex: tb.FakeStore.Saved.LatestIdx() + 1,
+				PrevLogTerm:  tb.FakeStore.Saved.LatestLog().Term,
+				LeaderId:     tb.BrainCfg.Id,
+				Entries:      []byte{},
+			}.Encode(),
+		}.Encode()
+
+		appEntRes := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_APPEND_ENTRIES_RES,
+			RelationId: 2,
+			Payload: rpc.AppendEntriesRes{
+				Term:    tb.FakeStore.Saved.LatestLog().Term + 1,
+				Success: true,
+			}.Encode(),
+		}.Encode()
+
+		run(t, tb, []testStep{
+			startBrain(),
+			passTime("ElectionTimeoutTimer"), // After election timeout, it became candidate. It still got to wait for the election to start on its end
+			sendInboundRpc("Append Entries Req", tb.Fellows[0].Id, appEntReq),   // Larger term AE, should trigger demote
+			checkOutboundRpc("Append Entries Res", tb.Fellows[0].Id, appEntRes), // Demoted, hence success
+		})
+	})
+
+	t.Run("Request Vote Response Term Bigger", func(t *testing.T) {
+		t.Parallel()
+	})
 }
 
-func TestTiedVote_Demoted(t *testing.T) {
+func TestTiedVote_AsCandidate(t *testing.T) {
 }
 
-func TestVoting(t *testing.T) {
+func TestTiedVote_AsFollower(t *testing.T) {
 }
 
-func TestReplication_AsLeader(t *testing.T) {
+func TestLeaderDemotion(t *testing.T) {
 }
 
-func TestReplication_AsFollower(t *testing.T) {
+func TestVoting_GrantVote(t *testing.T) {
+}
+
+func TestVoting_RejectVote(t *testing.T) {
+	// Voted
+	// Idx mismatch
+	// CurrTerm larger
+}
+
+func TestApply_AsLeader(t *testing.T) {
+}
+
+func TestApply_AsFollower(t *testing.T) {
 }
 
 func TestClientReq_AsLeader(t *testing.T) {
@@ -144,17 +206,19 @@ func giveMeATestBrain(quorumCount int) *testBrain {
 		Transport:    ftr,
 	}
 	cfg := &runtime.BrainConfig{
-		Id:   "iamhaha",
-		Addr: "local",
+		Id:      "iamhaha",
+		Addr:    "local",
 		Fellows: map[string]*runtime.Fellow{},
 	}
+	fellows := []*runtime.Fellow{}
 
-	for i := range quorumCount-1 {
+	for i := range quorumCount - 1 {
 		id := strconv.Itoa(i)
 		cfg.Fellows[id] = &runtime.Fellow{
-			Id: id,
+			Id:   id,
 			Addr: id,
 		}
+		fellows = append(fellows, cfg.Fellows[id])
 	}
 
 	l := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
@@ -171,75 +235,164 @@ func giveMeATestBrain(quorumCount int) *testBrain {
 		BrainCfg:      cfg,
 		Brain:         b,
 		TransportCfg:  tcfg,
+		Fellows:       fellows,
 	}
 }
 
-type testStep = func(ass *assert.Assertions, b *testBrain) bool
+type testStep struct {
+	Name string
+	F    func(ass *assert.Assertions, b *testBrain) bool
+}
 
-func run(t *testing.T, ass *assert.Assertions, b *testBrain, steps []testStep) bool {
+func run(t *testing.T, b *testBrain, steps []testStep) {
 	t.Helper()
 
-	ok := true
 	for _, step := range steps {
-		ok = ok && step(ass, b)
-	}
+		ok := t.Run(step.Name, func(t *testing.T) {
+			ass := assert.New(t)
+			step.F(ass, b)
+		})
 
-	return ok
-}
-
-func startBrain(ass *assert.Assertions, b *testBrain) bool {
-	b.Brain.Start(b.TransportCfg)
-	return ass.Equal(len(b.BrainCfg.Fellows)+1, len(b.FakeTransport.ConnMap), "Fellow not regiestered")
-}
-
-func passTime(timer core.Timer) testStep {
-	return func(ass *assert.Assertions, b *testBrain) bool {
-		timer.(*fakeTimer).PassTime()
-		return true
+		if !ok {
+			t.Fatalf("Step %s Failed", step.Name)
+		}
 	}
 }
 
-func checkOutboundRpc(bs []byte) testStep {
-	return func(ass *assert.Assertions, b *testBrain) bool {
-		ass.Equal(len(b.BrainCfg.Fellows)+1, len(b.FakeTransport.ConnMap), "Fellow not regiestered")
-		ok := true
+func startBrain() testStep {
+	return testStep{
+		Name: "Start Brain",
+		F: func(ass *assert.Assertions, b *testBrain) bool {
+			b.Brain.Start(b.TransportCfg)
+			return ass.Equal(len(b.BrainCfg.Fellows)+1, len(b.FakeTransport.ConnMap), "Fellow not regiestered")
+		},
+	}
+}
 
-		for id, conn := range b.FakeTransport.ConnMap {
-			if id == "self" {
-				continue
+func passTime(timerName string) testStep {
+	return testStep{
+		Name: fmt.Sprintf("Passing time for timer:  %s", timerName),
+		F: func(ass *assert.Assertions, b *testBrain) bool {
+			var timer *fakeTimer
+			switch timerName {
+			case "ElectionTimer":
+				timer = b.Deps.ElectionTimer.(*fakeTimer)
+			case "WaitForElectionTimer":
+				timer = b.Deps.WaitForElectionTimer.(*fakeTimer)
+			case "ElectionTimeoutTimer":
+				timer = b.Deps.ElectionTimeoutTimer.(*fakeTimer)
+			case "HeartbeatTimer":
+				timer = b.Deps.HeartbeatTimer.(*fakeTimer)
 			}
+			if timer != nil {
+				timer.PassTime()
+			}
+			return true
+		},
+	}
+}
+
+func checkBroadcastedRpc(rpc string, bs []byte) testStep {
+	return testStep{
+		Name: fmt.Sprintf("Check Broadcasted RPC: %s", rpc),
+		F: func(ass *assert.Assertions, b *testBrain) bool {
+			ass.Equal(len(b.BrainCfg.Fellows)+1, len(b.FakeTransport.ConnMap), "Fellow not regiestered")
+			ok := true
+
+			for id, conn := range b.FakeTransport.ConnMap {
+				if id == "self" {
+					continue
+				}
+				// Ensure the write comes through, since we can't be sure the timing
+				// Also put a escape hatch: timer stop if the program is bugged and the write never happened
+				select {
+				case <-conn.WrittenCh:
+				case <-time.After(3 * time.Second):
+					ok = false
+					ass.Failf("Check Broadcast RPC Failed", "Timer expired for %s", id)
+				}
+				ass.Equalf(0, len(conn.WrittenCh), "Unexpected write: %s", id)
+
+				if diff := cmp.Diff(bs, conn.ClearWriteBuff()); diff != "" {
+					ok = false
+					ass.Failf("Check Broadcast RPC Failed", "TestBs mismatch for %s (-want +got):\n%s", id, diff)
+				}
+			}
+
+			return ok
+		},
+	}
+}
+
+func broadcastInboundRpc(rpc string, bs []byte, limit int) testStep {
+	return testStep{
+		Name: fmt.Sprintf("Broadcast Inbound RPC: %s", rpc),
+		F: func(ass *assert.Assertions, b *testBrain) bool {
+			ass.Equal(len(b.BrainCfg.Fellows)+1, len(b.FakeTransport.ConnMap), "Fellow not regiestered")
+
+			idx := 0
+			for id, conn := range b.FakeTransport.ConnMap {
+				if id == "self" {
+					continue
+				}
+				conn.AddReadBuf(bs)
+				idx++
+				if limit > 0 && idx >= limit {
+					break
+				}
+			}
+
+			return true
+		},
+	}
+}
+
+func sendInboundRpc(rpc string, from string, bs []byte) testStep {
+	return testStep{
+		Name: fmt.Sprintf("Send Inbound RPC: %s", rpc),
+		F: func(ass *assert.Assertions, b *testBrain) bool {
+			ass.Equal(len(b.BrainCfg.Fellows)+1, len(b.FakeTransport.ConnMap), "Fellow not regiestered")
+
+			conn, ok := b.FakeTransport.ConnMap[from]
+			if !ok {
+				ass.Failf("Send Inbound RPC", "Either you messed up, or the brain did not register this id: %s", from)
+				return false
+			}
+
+			conn.AddReadBuf(bs)
+			return true
+		},
+	}
+}
+
+func checkOutboundRpc(rpc string, from string, bs []byte) testStep {
+	return testStep{
+		Name: fmt.Sprintf("Check Outbound RPC: %s", rpc),
+		F: func(ass *assert.Assertions, b *testBrain) bool {
+			ass.Equal(len(b.BrainCfg.Fellows)+1, len(b.FakeTransport.ConnMap), "Fellow not regiestered")
+
+			conn, ok := b.FakeTransport.ConnMap[from]
+			if !ok {
+				ass.Failf("Check Outbound RPC", "Either you messed up, or the brain did not register this id: %s", from)
+				return false
+			}
+
 			// Ensure the write comes through, since we can't be sure the timing
 			// Also put a escape hatch: timer stop if the program is bugged and the write never happened
 			select {
 			case <-conn.WrittenCh:
 			case <-time.After(3 * time.Second):
 				ok = false
-				ass.Failf("RequestVote Failed", "Timer expired for %s", id)
+				ass.Failf("Check Outbound RPC", "Timer expired for %s", from)
 			}
+			ass.Equalf(0, len(conn.WrittenCh), "Unexpected write for %s", from)
 
 			if diff := cmp.Diff(bs, conn.ClearWriteBuff()); diff != "" {
 				ok = false
-				ass.Failf("RequestVote Failed", "TestBs mismatch for %s (-want +got):\n%s", id, diff)
+				ass.Failf("Check Outbound RPC", "TestBs mismatch for %s (-want +got):\n%s", from, diff)
 			}
-		}
-
-		return ok
-	}
-}
-
-func sendInboundRpc(bs [][]byte) testStep {
-	return func(ass *assert.Assertions, b *testBrain) bool {
-		ass.Equal(len(b.BrainCfg.Fellows)+1, len(b.FakeTransport.ConnMap), "Fellow not regiestered")
-
-		idx := 0
-		for id, conn := range b.FakeTransport.ConnMap {
-			if id == "self" {
-				continue
-			}
-			conn.AddReadBuf(bs[idx%len(bs)])
-		}
-
-		return true
+			return true
+		},
 	}
 }
 
@@ -250,6 +403,7 @@ type testBrain struct {
 	BrainCfg      *runtime.BrainConfig
 	Brain         *runtime.Brain
 	TransportCfg  core.TransportCfg
+	Fellows       []*runtime.Fellow
 }
 
 type fakeTransport struct {
@@ -264,7 +418,8 @@ func (t *fakeTransport) Send(id string, bs []byte) error {
 		return errors.New("Id not registered")
 	}
 
-	_, err := t.ConnMap[id].Write(bs)
+	n, err := t.ConnMap[id].Write(bs)
+	fmt.Printf("id: %s, n: %d\n", id, n)
 	return err
 }
 
