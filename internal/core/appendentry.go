@@ -8,11 +8,6 @@ import (
 
 const AE_SNAPSHOT_BS_LEN = 7
 
-type Store interface {
-	ReplaceFrom(uint32, AppendEntries) 
-	Restore() []byte
-}
-
 type AppendEntry struct {
 	Term         uint32
 	CounterDelta uint16
@@ -57,6 +52,9 @@ func (ae AppendEntries) LatestIdx() uint32 {
 }
 
 func (ae AppendEntries) LatestLog() AppendEntry {
+	if len(ae) == 0 {
+		return AppendEntry{}
+	}
 	return ae[ae.LatestIdx()]
 }
 
@@ -121,6 +119,9 @@ func (ae *AppendEntriesStore) Append(entry AppendEntry) {
 	ae.mu.Lock()
 	defer ae.mu.Unlock()
 
+	if ae.entries == nil {
+		ae.entries = make([]AppendEntry, 1)
+	}
 	ae.entries = append(ae.entries, entry)
 }
 
@@ -191,7 +192,7 @@ func (ae *AppendEntriesStore) Restore() (uint32, AppendEntry) {
 		ae.entries = make([]AppendEntry, 1)
 	}
 
-	ae.entries = append(ae.entries, DecodeAppendEntries(ss)...)
+	ae.entries = append(ae.entries, ss...)
 
 	return ae.entries.LatestIdx(), ae.entries.LatestLog()
 }

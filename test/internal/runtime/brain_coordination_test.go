@@ -18,20 +18,14 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// THIS SERVE AS A DETERMINISTIC TESTING FOR THE RUNTIME (kind of, you know go is not that deterministic)
+// THIS SERVE AS A DETERMINISTIC COORDINATION TESTING FOR THE RUNTIME (kind of, you know go is not that deterministic), THE GOAL IS TO CHECK IF EACH "TICK": RPC / TIMER, TRIGGERS A CORRECT RESULT
 //   - Deterministic timer / ticker
 //   - Deterministic transport
 //   - Fake follower
-//
-// THE GOAL IS TO CHECK IF EACH "TICK": RPC / TIMER, TRIGGERS A CORRECT RESULT
+// IT WILL TEST:
+//   - RPC communications based on state logic
+//   - Timer based action
 
-// 1. Start as follower, restore Store's AppendEntries
-// 2. Election timeout
-// 3. Wait for election
-// 4. Send RequestVote RPC with correct Param
-// 5. Receive vote from majority, become leader
-// 6. Wait for heartbeat timer
-// 6. Send AE with correct Param
 func TestCandidatePromotion(t *testing.T) {
 	b := giveMeATestBrain(3)
 
@@ -107,8 +101,8 @@ func TestCandidateDemotion(t *testing.T) {
 
 		run(t, b, []testStep{
 			startBrain(),
-			passTime("ElectionTimeoutTimer"),                // After election timeout, it became candidate. It still got to wait for the election to start on its end
-			sendInboundRpc("Append Entries Req", appEntReq), // Larger term AE, should trigger demote
+			passTime("ElectionTimeoutTimer"),                  // After election timeout, it became candidate. It still got to wait for the election to start on its end
+			sendInboundRpc("Append Entries Req", appEntReq),   // Larger term AE, should trigger demote
 			checkOutboundRpc("Append Entries Res", appEntRes), // Demoted, hence success
 		})
 	})
@@ -296,24 +290,208 @@ func TestRestartElection_AsCandidate(t *testing.T) {
 			sendInboundRpc("First Round Request Vote Res", firstRoundInboundReqVoteRes), // One vote, not enough
 			passTime("ElectionTimer"), // Restart Election
 			sendInboundRpc("Request Vote Req", inboundReqVoteReq),
-			checkOutboundRpc("Request Vote Req", outBoundReqVoteRes),
+			checkOutboundRpc("Request Vote Res", outBoundReqVoteRes),
 		})
 	})
 }
 
 func TestRestartElection_AsFollower(t *testing.T) {
-}
+	b := giveMeATestBrain(5)
 
-func TestLeaderDemotion(t *testing.T) {
-}
+	firstRoundInboundReqVoteReq := rpc.Frame{
+		RPCType: rpc.RPC_TYPE_REQUEST_VOTE_REQ,
+		// First request, should be 1
+		RelationId: 1,
+		Payload: rpc.RequestVoteReq{
+			Term:         b.FakeStore.Saved.LatestLog().Term + 1,
+			CandidateId:  b.Fellows[0].Id,
+			LastLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
+			LastLogTerm:  b.FakeStore.Saved.LatestLog().Term,
+		}.Encode(),
+	}.Encode()
 
-func TestVoting_GrantVote(t *testing.T) {
+	firstRoundInboundReqVoteRes := rpc.Frame{
+		RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
+		RelationId: 1,
+		Payload: rpc.RequestVoteRes{
+			Term:        b.FakeStore.Saved.LatestLog().Term + 1,
+			VoteGranted: true,
+		}.Encode(),
+	}.Encode()
+
+	secondRoundInboundReqVoteReq := rpc.Frame{
+		RPCType: rpc.RPC_TYPE_REQUEST_VOTE_REQ,
+		// First request, should be 1
+		RelationId: 1,
+		Payload: rpc.RequestVoteReq{
+			Term:         b.FakeStore.Saved.LatestLog().Term + 2,
+			CandidateId:  b.Fellows[1].Id,
+			LastLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
+			LastLogTerm:  b.FakeStore.Saved.LatestLog().Term,
+		}.Encode(),
+	}.Encode()
+
+	secondRoundOutBoundReqVoteRes := rpc.Frame{
+		RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
+		RelationId: 1,
+		Payload: rpc.RequestVoteRes{
+			Term:        b.FakeStore.Saved.LatestLog().Term + 2,
+			VoteGranted: true,
+		}.Encode(),
+	}.Encode()
+
+	run(t, b, []testStep{
+		startBrain(),
+		sendInboundRpc("First Round Request Vote Req", firstRoundInboundReqVoteReq),
+		checkOutboundRpc("First Round Request Vote Res", firstRoundInboundReqVoteRes),
+		sendInboundRpc("Second Round Request Vote Req", secondRoundInboundReqVoteReq),
+		checkOutboundRpc("Second Round Request Vote Res", secondRoundOutBoundReqVoteRes),
+	})
 }
 
 func TestVoting_RejectVote(t *testing.T) {
-	// Voted
-	// Idx mismatch
-	// CurrTerm larger
+	t.Run("Voted", func(t *testing.T) {
+		b := giveMeATestBrain(5)
+
+		firstRoundInboundReqVoteReq := rpc.Frame{
+			RPCType: rpc.RPC_TYPE_REQUEST_VOTE_REQ,
+			// First request, should be 1
+			RelationId: 1,
+			Payload: rpc.RequestVoteReq{
+				Term:         b.FakeStore.Saved.LatestLog().Term + 1,
+				CandidateId:  b.Fellows[0].Id,
+				LastLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
+				LastLogTerm:  b.FakeStore.Saved.LatestLog().Term,
+			}.Encode(),
+		}.Encode()
+
+		firstRoundInboundReqVoteRes := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
+			RelationId: 1,
+			Payload: rpc.RequestVoteRes{
+				Term:        b.FakeStore.Saved.LatestLog().Term + 1,
+				VoteGranted: true,
+			}.Encode(),
+		}.Encode()
+
+		secondRoundInboundReqVoteReq := rpc.Frame{
+			RPCType: rpc.RPC_TYPE_REQUEST_VOTE_REQ,
+			// First request, should be 1
+			RelationId: 1,
+			Payload: rpc.RequestVoteReq{
+				Term:         b.FakeStore.Saved.LatestLog().Term + 1,
+				CandidateId:  b.Fellows[1].Id,
+				LastLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
+				LastLogTerm:  b.FakeStore.Saved.LatestLog().Term,
+			}.Encode(),
+		}.Encode()
+
+		secondRoundOutBoundReqVoteRes := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
+			RelationId: 1,
+			Payload: rpc.RequestVoteRes{
+				Term:        b.FakeStore.Saved.LatestLog().Term + 1,
+				VoteGranted: false,
+			}.Encode(),
+		}.Encode()
+
+		// This is not exactly the full test
+		// One more behaviour i would like to test is follower not promoting after election timeout tiemr passed
+		// There is no deterministic way i can test that since we rely on channel for the timer
+		// Even if we expose the raftState, go routine contention is not deterministic
+		run(t, b, []testStep{
+			startBrain(),
+			sendInboundRpc("First Round Request Vote Req", firstRoundInboundReqVoteReq),
+			checkOutboundRpc("First Round Request Vote Res", firstRoundInboundReqVoteRes),
+			sendInboundRpc("Second Round Request Vote Req", secondRoundInboundReqVoteReq),
+			checkOutboundRpc("Second Round Request Vote Res", secondRoundOutBoundReqVoteRes),
+		})
+	})
+
+	t.Run("Last Log Mismatch", func(t *testing.T) {
+		b := giveMeATestBrain(5)
+
+		firstRoundInboundReqVoteReq := rpc.Frame{
+			RPCType: rpc.RPC_TYPE_REQUEST_VOTE_REQ,
+			// First request, should be 1
+			RelationId: 1,
+			Payload: rpc.RequestVoteReq{
+				Term:         b.FakeStore.Saved.LatestLog().Term + 1,
+				CandidateId:  b.Fellows[0].Id,
+				LastLogIndex: b.FakeStore.Saved.LatestIdx() + 2,
+				LastLogTerm:  b.FakeStore.Saved.LatestLog().Term - 1,
+			}.Encode(),
+		}.Encode()
+
+		secondRoundInboundReqVoteReq := rpc.Frame{
+			RPCType: rpc.RPC_TYPE_REQUEST_VOTE_REQ,
+			// First request, should be 1
+			RelationId: 1,
+			Payload: rpc.RequestVoteReq{
+				Term:         b.FakeStore.Saved.LatestLog().Term + 1,
+				CandidateId:  b.Fellows[1].Id,
+				LastLogIndex: b.FakeStore.Saved.LatestIdx() - 1,
+				LastLogTerm:  b.FakeStore.Saved.LatestLog().Term - 1,
+			}.Encode(),
+		}.Encode()
+
+		voteNotGrantedInboundReqVoteRes := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
+			RelationId: 1,
+			Payload: rpc.RequestVoteRes{
+				Term:        b.FakeStore.Saved.LatestLog().Term + 1,
+				VoteGranted: false,
+			}.Encode(),
+		}.Encode()
+
+		// This is not exactly the full test
+		// One more behaviour i would like to test is follower not promoting after election timeout tiemr passed
+		// There is no deterministic way i can test that since we rely on channel for the timer
+		// Even if we expose the raftState, go routine contention is not deterministic
+		run(t, b, []testStep{
+			startBrain(),
+			sendInboundRpc("First Round Request Vote Req", firstRoundInboundReqVoteReq),
+			checkOutboundRpc("First Round Request Vote Res", voteNotGrantedInboundReqVoteRes),
+			sendInboundRpc("Second Round Request Vote Req", secondRoundInboundReqVoteReq),
+			checkOutboundRpc("Second Round Request Vote Res", voteNotGrantedInboundReqVoteRes),
+		})
+	})
+
+	t.Run("Current Term Larger", func(t *testing.T) {
+		b := giveMeATestBrain(5)
+
+		firstRoundInboundReqVoteReq := rpc.Frame{
+			RPCType: rpc.RPC_TYPE_REQUEST_VOTE_REQ,
+			// First request, should be 1
+			RelationId: 1,
+			Payload: rpc.RequestVoteReq{
+				Term:         b.FakeStore.Saved.LatestLog().Term - 1,
+				CandidateId:  b.Fellows[0].Id,
+				LastLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
+				LastLogTerm:  b.FakeStore.Saved.LatestLog().Term,
+			}.Encode(),
+		}.Encode()
+
+		firstRoundInboundReqVoteRes := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
+			RelationId: 1,
+			Payload: rpc.RequestVoteRes{
+				Term:        b.FakeStore.Saved.LatestLog().Term,
+				VoteGranted: false,
+			}.Encode(),
+		}.Encode()
+
+		// This is not exactly the full test
+		// One more behaviour i would like to test is follower not promoting after election timeout tiemr passed
+		// There is no deterministic way i can test that since we rely on channel for the timer
+		// Even if we expose the raftState, go routine contention is not deterministic
+		run(t, b, []testStep{
+			startBrain(),
+			sendInboundRpc("First Round Request Vote Req", firstRoundInboundReqVoteReq),
+			checkOutboundRpc("First Round Request Vote Req", firstRoundInboundReqVoteRes),
+		})
+	})
+
 }
 
 func TestApply_AsLeader(t *testing.T) {
@@ -589,8 +767,7 @@ func (t *fakeTransport) Send(id string, bs []byte) error {
 		return errors.New("Id not registered")
 	}
 
-	n, err := t.ConnMap[id].Write(bs)
-	fmt.Printf("id: %s, n: %d\n", id, n)
+	_, err := t.ConnMap[id].Write(bs)
 	return err
 }
 
@@ -662,8 +839,8 @@ func (s *fakeStore) ReplaceFrom(idx uint32, entries core.AppendEntries) {
 	s.Saved = append(s.Saved[:idx], entries...)
 }
 
-func (s *fakeStore) Restore() []byte {
-	return s.Saved.Encode()
+func (s *fakeStore) Restore() core.AppendEntries {
+	return s.Saved
 }
 
 type fakeTimer struct {

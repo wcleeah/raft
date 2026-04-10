@@ -23,6 +23,21 @@ type StateMachine struct {
 	flip    bool
 }
 
+func (sm *StateMachine) Counter() int32 {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	return sm.counter
+}
+
+func (sm *StateMachine) Flip() bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	return sm.flip
+}
+
+
 func (sm *StateMachine) Act(action StateAction, counterDelta uint16) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()

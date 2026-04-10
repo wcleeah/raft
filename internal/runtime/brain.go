@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -75,6 +76,7 @@ func (b *Brain) Start(cfg core.TransportCfg) {
 
 	// initiate connection for rpc request FROM this node and response for that request
 	b.deps.Transport.RegisterSelf(b.id, b.addr, b.handleRPC, cfg)
+	b.raftState.RegisterNode(b.id)
 	b.l.Debug("registered self transport", "node_id", b.id, "addr", b.addr)
 
 	// initiate connection for rpc request TO this node and response for that request
@@ -159,22 +161,7 @@ func (b *Brain) handleRPC(id string, bs []byte) {
 func (b *Brain) handleVoteRequest(req rpc.RequestVoteReq) rpc.RequestVoteRes {
 	b.l.Debug("handling vote request", "node_id", b.id, "candidate_id", req.CandidateId, "candidate_term", req.Term, "last_log_index", req.LastLogIndex, "last_log_term", req.LastLogTerm)
 
-	idx, log := b.entries.LatestLog()
-	if req.LastLogTerm < log.Term {
-		b.l.Debug("rejecting vote: candidate log term behind", "node_id", b.id, "candidate_id", req.CandidateId, "candidate_last_log_term", req.LastLogTerm, "our_last_log_term", log.Term)
-		return rpc.RequestVoteRes{
-			VoteGranted: false,
-			Term:        b.raftState.Term(),
-		}
-	}
-	if req.LastLogIndex < idx {
-		b.l.Debug("rejecting vote: candidate log index behind", "node_id", b.id, "candidate_id", req.CandidateId, "candidate_last_log_index", req.LastLogIndex, "our_last_log_index", idx)
-		return rpc.RequestVoteRes{
-			VoteGranted: false,
-			Term:        b.raftState.Term(),
-		}
-	}
-	term, err := b.raftState.Vote(req.CandidateId, req.Term)
+	term, err := b.raftState.Vote(req.CandidateId, req.Term, req.LastLogIndex, req.LastLogTerm, b.entries.Copy())
 	if err != nil {
 		b.l.Warn("vote denied by raft state", "node_id", b.id, "candidate_id", req.CandidateId, "term", term, "error", err)
 		return rpc.RequestVoteRes{
@@ -198,8 +185,9 @@ func (b *Brain) handleVoteResult(id string, res rpc.RequestVoteRes) {
 func (b *Brain) handleAppendEntriesRequest(_ string, req rpc.AppendEntriesReq) rpc.AppendEntriesRes {
 	b.l.Debug("handling AE request", "node_id", b.id, "leader_id", req.LeaderId, "term", req.Term, "prev_log_index", req.PrevLogIndex, "prev_log_term", req.PrevLogTerm, "leader_commit", req.LeaderCommit)
 
-	if req.Term < b.raftState.Term() {
-		b.l.Warn("rejecting AE: stale term", "node_id", b.id, "leader_id", req.LeaderId, "req_term", req.Term, "current_term", b.raftState.Term())
+	err := b.raftState.GotAEReq(req.LeaderId, req.Term)
+	if err != nil {
+		b.l.Warn("rejecting AE", "node_id", b.id, "leader_id", req.LeaderId, "req_term", req.Term, "current_term", b.raftState.Term(), "err", err)
 		return rpc.AppendEntriesRes{
 			Term:    b.raftState.Term(),
 			Success: false,
@@ -215,8 +203,7 @@ func (b *Brain) handleAppendEntriesRequest(_ string, req rpc.AppendEntriesReq) r
 		}
 	}
 
-	b.raftState.GotAEReq(req.LeaderId, req.Term, req.LeaderCommit, latestLogIdx)
-	b.l.Debug("AE request accepted", "node_id", b.id, "leader_id", req.LeaderId, "term", req.Term, "latest_log_index", latestLogIdx)
+	b.raftState.UpdateCommitIdx(min(latestLogIdx, req.LeaderCommit))
 
 	return rpc.AppendEntriesRes{
 		Term:    b.raftState.Term(),
@@ -235,12 +222,20 @@ func (b *Brain) handleAppendEntriesResult(id string, res rpc.AppendEntriesRes, r
 func (b *Brain) handleStateActionReq(req rpc.StateActionReq) rpc.StateActionRes {
 	b.l.Debug("handling state action request", "node_id", b.id, "action", req.Action, "counter_delta", req.CounterDelta)
 
-	if b.raftState.Role() != core.RAFT_ROLE_LEADER {
-		leaderId := b.raftState.LeaderId()
-		b.l.Warn("rejecting state action: not leader", "node_id", b.id, "redirect_to", leaderId)
+	err := b.raftState.IncLeaderIndexes(b.id)
+	if err != nil {
+		if errors.Is(err, core.RaftStateNotALeaderErr) {
+			leaderId := b.raftState.LeaderId()
+			b.l.Warn("rejecting state action: not leader", "node_id", b.id, "redirect_to", leaderId)
+			return rpc.StateActionRes{
+				Success:      false,
+				RedirectAddr: b.fellows[leaderId].Addr,
+			}
+		}
+
+		b.l.Error("rejecting state action: unexpected error", "node_id", b.id, "err", err)
 		return rpc.StateActionRes{
-			Success:      false,
-			RedirectAddr: leaderId,
+			Success: false,
 		}
 	}
 
@@ -250,7 +245,6 @@ func (b *Brain) handleStateActionReq(req rpc.StateActionReq) rpc.StateActionRes 
 		Action:       req.Action,
 	})
 
-	b.raftState.IncLeaderIndexes(b.id)
 	b.l.Info("state action appended", "node_id", b.id, "term", b.raftState.Term(), "action", req.Action, "counter_delta", req.CounterDelta)
 
 	return rpc.StateActionRes{

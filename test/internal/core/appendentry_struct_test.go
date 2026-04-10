@@ -39,6 +39,98 @@ func TestAppendEntryDecode(t *testing.T) {
 	}
 }
 
+func TestAppendEntryLayoutSync(t *testing.T) {
+	ae := core.AppendEntry{
+		Term:         3,
+		CounterDelta: 4,
+		Action:       core.STATE_MINUS,
+	}
+
+	out := ae.Encode()
+	aeOut := core.DecodeAppendEntry(out)
+	if diff := cmp.Diff(ae, aeOut); diff != "" {
+		t.Fatalf("AppendEntry byte layout mismatch, (-want +got):\n%s", diff)
+	}
+
+}
+
+func TestAppendEntriesLen(t *testing.T) {
+	aes := core.AppendEntries{
+		{
+			Term:         1,
+			CounterDelta: 2,
+			Action:       core.STATE_ADD,
+		},
+		{
+			Term:         3,
+			CounterDelta: 4,
+			Action:       core.STATE_ADD,
+		},
+		{
+			Term:         5,
+			CounterDelta: 6,
+			Action:       core.STATE_FLIP,
+		},
+	}
+
+	assert.Equal(t, uint32(3), aes.Len())
+}
+
+func TestAppendEntriesLastIndex(t *testing.T) {
+	assert := assert.New(t)
+
+	aes := core.AppendEntries{}
+	assert.Equal(uint32(0), aes.LatestIdx())
+
+	aes = append(aes, core.AppendEntry{})
+	assert.Equal(uint32(0), aes.LatestIdx())
+
+	aes = append(aes, core.AppendEntry{})
+	assert.Equal(uint32(1), aes.LatestIdx())
+}
+
+func TestAppendEntriesLatestLog(t *testing.T) {
+	aes := core.AppendEntries{}
+
+	if diff := cmp.Diff(core.AppendEntry{}, aes.LatestLog()); diff != "" {
+		t.Fatalf("AES LatestLog mismatch: no entry (-watch +got):\n%s", diff)
+	}
+
+	ae := core.AppendEntry{
+		Term:         1,
+		CounterDelta: 2,
+		Action:       core.STATE_ADD,
+	}
+	aes = append(aes, ae)
+	if diff := cmp.Diff(ae, aes.LatestLog()); diff != "" {
+		t.Fatalf("AES LatestLog mismatch: one entry (-watch +got):\n%s", diff)
+	}
+}
+
+func TestAppendEntriesCopy(t *testing.T) {
+	aes := core.AppendEntries{
+		{
+			Term:         1,
+			CounterDelta: 2,
+			Action:       core.STATE_ADD,
+		},
+		{
+			Term:         3,
+			CounterDelta: 4,
+			Action:       core.STATE_ADD,
+		},
+		{
+			Term:         5,
+			CounterDelta: 6,
+			Action:       core.STATE_FLIP,
+		},
+	}
+
+	if diff := cmp.Diff(aes, aes.Copy()); diff != "" {
+		t.Fatalf("AES copy mismatch (-watch +got):\n%s", diff)
+	}
+}
+
 func TestAppendEntriesEncode(t *testing.T) {
 	aes := core.AppendEntries{
 		{
@@ -89,12 +181,12 @@ func TestAppendEntriesDecode(t *testing.T) {
 	}
 }
 
-func TestAppendEntriesLen(t *testing.T) {
+func TestAppendEntriesByteLayoutSync(t *testing.T) {
 	aes := core.AppendEntries{
 		{
-			Term:         1,
-			CounterDelta: 2,
-			Action:       core.STATE_ADD,
+			Term:         5,
+			CounterDelta: 6,
+			Action:       core.STATE_FLIP,
 		},
 		{
 			Term:         3,
@@ -102,50 +194,17 @@ func TestAppendEntriesLen(t *testing.T) {
 			Action:       core.STATE_ADD,
 		},
 		{
-			Term:         5,
-			CounterDelta: 6,
-			Action:       core.STATE_FLIP,
-		},
-	}
-
-	assert.Equal(t, uint32(3), aes.Len())
-}
-
-func TestLastIndex(t *testing.T) {
-	assert := assert.New(t)
-
-	aes := core.AppendEntries{}
-
-	assert.Equal(uint32(0), aes.LatestIdx())
-
-	aes = append(aes, core.AppendEntry{})
-	assert.Equal(uint32(0), aes.LatestIdx())
-
-	aes = append(aes, core.AppendEntry{})
-	assert.Equal(uint32(1), aes.LatestIdx())
-}
-
-func TestAppendEntriesCopy(t *testing.T) {
-	aes := core.AppendEntries{
-		{
 			Term:         1,
 			CounterDelta: 2,
 			Action:       core.STATE_ADD,
 		},
-		{
-			Term:         3,
-			CounterDelta: 4,
-			Action:       core.STATE_ADD,
-		},
-		{
-			Term:         5,
-			CounterDelta: 6,
-			Action:       core.STATE_FLIP,
-		},
 	}
 
-	if diff := cmp.Diff(aes, aes.Copy()); diff != "" {
-		t.Fatalf("AES copy mismatch (-watch +got):\n%s", diff)
+	out := aes.Encode()
+	aesOut := core.DecodeAppendEntries(out)
+
+	if diff := cmp.Diff(aes, aesOut); diff != "" {
+		t.Fatalf("AES byte layout mismatch (-watch +got):\n%s", diff)
 	}
 }
 

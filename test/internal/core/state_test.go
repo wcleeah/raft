@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestUpdateRole(t *testing.T) {
+func TestStateUpdateRole(t *testing.T) {
 	assert := assert.New(t)
 	rs := &core.RaftState{}
 
@@ -34,7 +34,7 @@ func TestUpdateRole(t *testing.T) {
 	assert.Equal(0, len(rs.EventCh()), "Event ch is not empty")
 }
 
-func TestUpdateRoleFailCase(t *testing.T) {
+func TestStateUpdateRoleFailCase(t *testing.T) {
 	assert := assert.New(t)
 	// default role is Follower
 	rs := &core.RaftState{}
@@ -53,7 +53,18 @@ func TestUpdateRoleFailCase(t *testing.T) {
 	assert.False(ok, "Only follower can be promote to candidate")
 }
 
-func TestStartElection(t *testing.T) {
+func TestStateUpdateCommitIdx(t *testing.T) {
+	assert := assert.New(t)
+	rs := &core.RaftState{}
+
+	rs.UpdateCommitIdx(3)
+	assert.Equal(uint32(3), rs.CommitIdx(), "Commit idx mismatch after update")
+
+	rs.UpdateCommitIdx(2)
+	assert.Equal(uint32(3), rs.CommitIdx(), "Commit idx mismatch after supposedly failed update")
+}
+
+func TestStateStartElection(t *testing.T) {
 	assert := assert.New(t)
 	// default role is Follower
 	rs := &core.RaftState{}
@@ -67,16 +78,31 @@ func TestStartElection(t *testing.T) {
 	assert.True(rs.IsVoted(), "Self vote failed")
 }
 
-func TestStartElectionFailCase(t *testing.T) {
+func TestStateStartElectionFailCase(t *testing.T) {
 	assert := assert.New(t)
 	// default role is Follower
 	rs := &core.RaftState{}
 
 	err := rs.StartElection("test")
-	assert.EqualError(err, "Not a candidate")
+	assert.ErrorIs(core.RaftStateNotACandidateErr, err, "Error mismatched")
 }
 
-func TestVote(t *testing.T) {
+func TestStateStopElection(t *testing.T) {
+	assert := assert.New(t)
+
+	rs := &core.RaftState{}
+	err := rs.StopElection()
+	assert.ErrorIs(err, core.RaftStateNotACandidateErr, "Should return error when role is not candidate")
+
+	ok := rs.UpdateRole(core.RAFT_ROLE_CANDIDATE)
+	assert.True(ok, "Unexpected failed update to candidate")
+
+	err = rs.StopElection()
+	assert.NoError(err, "Unexpected error when stopping election")
+	assert.False(rs.IsVoted(), "Stopping election should make node not voted")
+}
+
+func TestStateVote(t *testing.T) {
 	assert := assert.New(t)
 	// default role is Follower
 	rs := &core.RaftState{}
@@ -84,38 +110,56 @@ func TestVote(t *testing.T) {
 	assert.False(rs.IsVoted(), "Before voting: Is voted shows voted")
 
 	voteTerm := uint32(3)
-	term, err := rs.Vote("test", voteTerm)
+	term, err := rs.Vote("test", voteTerm, 0, 0, core.AppendEntries{})
 	assert.NoError(err, "Vote has error when running happy path")
 	assert.Equal(voteTerm, term, "Returned Term after Vote is wrong")
 	assert.Equal(voteTerm, rs.Term(), "State Term after Vote is wrong")
 	assert.True(rs.IsVoted(), "After first vote: Is voted shows not voted")
+	assert.Equal(core.RAFT_ROLE_FOLLOWER, rs.Role(), "After first vote: role is not follower")
 
 	voteTerm++
-	term, err = rs.Vote("hehe", voteTerm)
+	term, err = rs.Vote("hehe", voteTerm, 0, 0, core.AppendEntries{})
 	assert.NoError(err, "Second Vote has error when running happy path")
 	assert.Equal(voteTerm, term, "Returned Term after Second Vote is wrong")
 	assert.Equal(voteTerm, rs.Term(), "State Term after Second Vote is wrong")
 	assert.True(rs.IsVoted(), "After second vote: Is voted shows not voted")
+	assert.Equal(core.RAFT_ROLE_FOLLOWER, rs.Role(), "After first vote: role is not follower")
 }
 
-func TestVoteFailCase(t *testing.T) {
+func TestStateVoteFailCase(t *testing.T) {
 	assert := assert.New(t)
 	// default role is Follower
 	rs := &core.RaftState{}
 
 	voteTerm := uint32(3)
-	_, err := rs.Vote("test", voteTerm)
+	_, err := rs.Vote("test", voteTerm, 1, 1, core.AppendEntries{{}, {
+		Term: 2,
+	}})
+	assert.EqualError(err, "Candidate log term behind")
+
+	_, err = rs.Vote("test", voteTerm, 1, 1, core.AppendEntries{
+		{},
+		{
+			Term: 1,
+		},
+		{
+			Term: 1,
+		},
+	})
+	assert.EqualError(err, "Candidate log index behind")
+
+	_, err = rs.Vote("test", voteTerm, 0, 0, core.AppendEntries{})
 	assert.NoError(err, "Unexpected error during first voting")
 
-	_, err = rs.Vote("hehe", voteTerm)
+	_, err = rs.Vote("hehe", voteTerm, 0, 0, core.AppendEntries{})
 	assert.EqualError(err, "Voted already")
 
 	voteTerm--
-	_, err = rs.Vote("hoho", voteTerm)
-	assert.EqualError(err, "Current term is higher")
+	_, err = rs.Vote("hoho", voteTerm, 0, 0, core.AppendEntries{})
+	assert.ErrorIs(core.RaftStateCurrentTermHigherErr, err, "Current term higher error mismatched")
 }
 
-func TestGotVote(t *testing.T) {
+func TestStateGotVote(t *testing.T) {
 	assert := assert.New(t)
 	// default role is Follower
 	rs := &core.RaftState{}
@@ -123,6 +167,7 @@ func TestGotVote(t *testing.T) {
 	assert.True(ok, "Unexpected error for updating raft role")
 
 	// well, leader is indeed the one and only kcw
+	rs.RegisterNode("kcw")
 	rs.StartElection("kcw")
 	rs.RegisterNode("sakura")
 	rs.RegisterNode("hyj")
@@ -146,7 +191,7 @@ func TestGotVote(t *testing.T) {
 	assert.Equal(2, len(rs.EventCh()), "Too many/little event")
 }
 
-func TestGotVoteFailCase(t *testing.T) {
+func TestStateGotVoteFailCase(t *testing.T) {
 	assert := assert.New(t)
 	// default role is Follower
 	rs := &core.RaftState{}
@@ -155,6 +200,7 @@ func TestGotVoteFailCase(t *testing.T) {
 	assert.True(ok, "Unexpected error for updating raft role")
 
 	// well, leader is indeed the one and only kcw
+	rs.RegisterNode("kcw")
 	rs.StartElection("kcw")
 	rs.RegisterNode("sakura")
 	rs.RegisterNode("hyj")
@@ -171,42 +217,53 @@ func TestGotVoteFailCase(t *testing.T) {
 	assert.Equal(2, len(rs.EventCh()), "Too many/little event")
 }
 
-func TestGotAEReq(t *testing.T) {
+func TestStateIsVoted(t *testing.T) {
+	assert := assert.New(t)
+	rs := &core.RaftState{}
+
+	// votedFor == "", term and votedTerm are the same
+	assert.False(rs.IsVoted(), "Initial voted should be false")
+
+	voteTerm := uint32(3)
+	term, err := rs.Vote("test", voteTerm, 0, 0, core.AppendEntries{})
+	assert.NoError(err, "Unexpected error during voting")
+	assert.Equal(voteTerm, term, "Unexpected mismatch between vote term and returned term")
+	assert.Equal(voteTerm, rs.Term(), "Unexpected mismatch between vote term and updated term")
+	assert.True(rs.IsVoted(), "IsVoted should be true")
+
+	rs.RestoreTerm(4)
+	// votedFor != "", term and votedTerm diverge
+	assert.False(rs.IsVoted(), "Term advanced, IsVoted should be false")
+}
+
+func TestStateGotAEReq(t *testing.T) {
 	assert := assert.New(t)
 	// default role is Follower
 	rs := &core.RaftState{}
 
 	leaderId := "kcw"
 	term := uint32(1)
-	newCommitIdx := uint32(3)
-	lastLogIndex := uint32(4)
-	rs.GotAEReq(leaderId, term, newCommitIdx, lastLogIndex)
+	err := rs.GotAEReq(leaderId, term)
+	assert.NoError(err, "First AE: unexpected error")
 	assert.Equal(term, rs.Term(), "First AE: Term not updated")
-	assert.Equal(newCommitIdx, rs.CommitIdx(), "First AE: Commit idx is wrong")
+	assert.Equal(leaderId, rs.LeaderId(), "First AE: Leader ID not updated")
 
-	newCommitIdx++
-	rs.GotAEReq(leaderId, term, newCommitIdx, lastLogIndex)
-	assert.Equal(newCommitIdx, rs.CommitIdx(), "Second AE: Commit idx is wrong")
-
-	newCommitIdx++
-	rs.GotAEReq(leaderId, term, newCommitIdx, lastLogIndex)
-	assert.Equal(lastLogIndex, rs.CommitIdx(), "Third AE: Commit idx is wrong")
-
-	smallCommitIdx := lastLogIndex - 1
-	rs.GotAEReq(leaderId, term, smallCommitIdx, smallCommitIdx)
-	assert.Equal(lastLogIndex, rs.CommitIdx(), "Forth AE: Commit idx is wrong")
+	err = rs.GotAEReq(leaderId, term-1)
+	assert.ErrorIs(err, core.RaftStateCurrentTermHigherErr, "Second AE: Term higher error is not returned")
+	assert.Equal(term, rs.Term(), "Second AE: Term should not be updated ")
 
 	secondRs := &core.RaftState{}
 	ok := secondRs.UpdateRole(core.RAFT_ROLE_CANDIDATE)
 	assert.True(ok, "Unexpected false from promoting to candidate")
 
 	secondTerm := uint32(2)
-	secondRs.GotAEReq(leaderId, secondTerm, 1, 1)
-	assert.Equal(secondTerm, secondRs.Term(), "Term did not get updated")
-	assert.Equal(core.RAFT_ROLE_FOLLOWER, secondRs.Role(), "Not demoted to follower")
+	secondRs.GotAEReq(leaderId, secondTerm)
+	assert.Equal(secondTerm, secondRs.Term(), "Third AE: Term did not get updated")
+	assert.Equal(core.RAFT_ROLE_FOLLOWER, secondRs.Role(), "Third AE: Not demoted to follower")
+	assert.Equal(leaderId, rs.LeaderId(), "Third AE: Leader ID not updated")
 }
 
-func TestGotAERes(t *testing.T) {
+func TestStateGotAERes(t *testing.T) {
 	assert := assert.New(t)
 	ae := core.AppendEntries{
 		{},
@@ -241,6 +298,7 @@ func TestGotAERes(t *testing.T) {
 	}
 
 	// well, leader is indeed the one and only kcw
+	rs.RegisterNode("kcw")
 	rs.StartElection("kcw")
 	rs.RegisterNode("sakura")
 	rs.RegisterNode("hyj")
@@ -317,7 +375,7 @@ func TestGotAERes(t *testing.T) {
 	}
 }
 
-func TestGotAEResTermRejection(t *testing.T) {
+func TestStateGotAEResTermRejection(t *testing.T) {
 	assert := assert.New(t)
 	ae := core.AppendEntries{
 		{},
@@ -343,6 +401,7 @@ func TestGotAEResTermRejection(t *testing.T) {
 	}
 
 	// well, leader is indeed the one and only kcw
+	rs.RegisterNode("kcw")
 	rs.StartElection("kcw")
 	rs.RegisterNode("sakura")
 	rs.RegisterNode("hyj")
@@ -404,4 +463,85 @@ func TestGotAEResTermRejection(t *testing.T) {
 		t.Fatal("Unexpected no commit idx event")
 	}
 
+}
+
+func TestStateIncLeaderIndexes(t *testing.T) {
+	assert := assert.New(t)
+	rs := &core.RaftState{}
+
+	leaderId := "kcw"
+	err := rs.IncLeaderIndexes(leaderId)
+	assert.ErrorIs(err, core.RaftStateNotALeaderErr, "Should return not leader error when not a leader")
+
+	ok := rs.UpdateRole(core.RAFT_ROLE_CANDIDATE)
+	assert.True(ok, "Unexpected false when updating to candidate")
+
+	ok = rs.UpdateRole(core.RAFT_ROLE_LEADER)
+	assert.True(ok, "Unexpected false when updating to leader")
+
+	err = rs.IncLeaderIndexes(leaderId)
+	assert.NoError(err, "Should not have error")
+	assert.Equal(uint32(1), rs.NextIndex(leaderId), "Next Index mismatch")
+	assert.Equal(uint32(1), rs.MatchIndex(leaderId), "Match Index mismatch")
+}
+
+func TestRestoreTerm(t *testing.T) {
+	assert := assert.New(t)
+	rs := &core.RaftState{}
+
+	term := uint32(3)
+	rs.RestoreTerm(term)
+	assert.Equal(term, rs.Term(), "Term not restored")
+
+	term++
+	rs.RestoreTerm(term)
+	assert.Equal(term-1, rs.Term(), "Term restored for the second time")
+}
+
+func TestStateRegisterNode(t *testing.T) {
+	assert := assert.New(t)
+	rs := &core.RaftState{}
+
+	id := "kcw"
+	rs.RegisterNode(id)
+	assert.Equal(uint32(0), rs.NextIndex(id), "Quorum count 1: Next Index mismatch")
+	assert.Equal(uint32(0), rs.MatchIndex(id), "Quorum count 1: Match Index mismatch")
+	assert.Equal(uint32(1), rs.Threshold(), "Quorum count 1: Threshold mismatch")
+
+	id = "hec"
+	rs.RegisterNode(id)
+	assert.Equal(uint32(0), rs.NextIndex(id), "Quorum count 2: Next Index mismatch")
+	assert.Equal(uint32(0), rs.MatchIndex(id), "Quorum count 2: Match Index mismatch")
+	assert.Equal(uint32(1), rs.Threshold(), "Quorum count 2: Threshold mismatch")
+
+	id = "hyj"
+	rs.RegisterNode(id)
+	assert.Equal(uint32(0), rs.NextIndex(id), "Quorum count 3: Next Index mismatch")
+	assert.Equal(uint32(0), rs.MatchIndex(id), "Quorum count 3: Match Index mismatch")
+	assert.Equal(uint32(2), rs.Threshold(), "Quorum count 3: Threshold mismatch")
+}
+
+func TestStateResetIndexes(t *testing.T) {
+	assert := assert.New(t)
+	rs := &core.RaftState{}
+
+	ids := []string{
+		"kcw",
+		"sakura",
+		"hyj",
+		"kazuha",
+		"hec",
+	}
+
+	for _, id := range ids {
+		rs.RegisterNode(id)
+	}
+
+	idx := uint32(3)
+	rs.ResetIndexes(idx)
+
+	for _, id := range ids {
+		assert.Equalf(idx, rs.NextIndex(id), "%s: Next Index mismatch", id)
+		assert.Equalf(uint32(0), rs.MatchIndex(id), "%s: Match Index mismatch", id)
+	}
 }

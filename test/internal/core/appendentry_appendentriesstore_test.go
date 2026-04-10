@@ -24,16 +24,49 @@ func (s *FakeStore) ReplaceFrom(idx uint32, entries core.AppendEntries) {
 	s.Saved = append(s.Saved[:idx], entries...)
 }
 
-func (s *FakeStore) Restore() []byte {
-	return s.Saved.Encode()
+func (s *FakeStore) Restore() core.AppendEntries {
+	return s.Saved
 }
 
-func TestReplicate(t *testing.T) {
+func TestAppendEntriesStoreAppendAndCopy(t *testing.T) {
+	fs := &FakeStore{}
+
+	store := &core.AppendEntriesStore{
+		Store: fs,
+	}
+
+	aes := core.AppendEntries{
+		{},
+		{
+			Term:         1,
+			Action:       core.STATE_ADD,
+			CounterDelta: 1,
+		},
+		{
+			Term:         2,
+			Action:       core.STATE_FLIP,
+			CounterDelta: 2,
+		},
+		{
+			Term:         3,
+			Action:       core.STATE_MINUS,
+			CounterDelta: 3,
+		},
+	}
+	for _, entry := range aes[1:] {
+		store.Append(entry)
+	}
+
+	if diff := cmp.Diff(aes, store.Copy()); diff != "" {
+		t.Fatalf("AEStore Copy Entries mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestAppendEntriesStoreReplicate(t *testing.T) {
 	assert := assert.New(t)
 
 	fs := &FakeStore{}
 
-	// not using new to test set default
 	ae := &core.AppendEntriesStore{
 		Store: fs,
 	}
@@ -101,7 +134,7 @@ func TestReplicate(t *testing.T) {
 	}
 }
 
-func TestReplicateFailCase(t *testing.T) {
+func TestAppendEntriesStoreReplicateFailCase(t *testing.T) {
 	assert := assert.New(t)
 
 	ae := core.NewAppendEntriesStore(&FakeStore{})
@@ -127,7 +160,7 @@ func TestReplicateFailCase(t *testing.T) {
 
 }
 
-func TestApplyAll(t *testing.T) {
+func TestAppendEntriesStoreApplyAll(t *testing.T) {
 	assert := assert.New(t)
 
 	ae := core.NewAppendEntriesStore(&FakeStore{})
@@ -159,7 +192,7 @@ func TestApplyAll(t *testing.T) {
 	assert.Empty(emptyEntries)
 }
 
-func TestApplyAllFailedCase(t *testing.T) {
+func TestAppendEntriesStoreApplyAllFailedCase(t *testing.T) {
 	assert := assert.New(t)
 
 	ae := core.NewAppendEntriesStore(&FakeStore{})
@@ -167,7 +200,7 @@ func TestApplyAllFailedCase(t *testing.T) {
 	assert.Empty(emptyEntries)
 }
 
-func TestLatestLog(t *testing.T) {
+func TestAppendEntriesStoreLatestLog(t *testing.T) {
 	assert := assert.New(t)
 	ae := core.NewAppendEntriesStore(&FakeStore{})
 
@@ -204,7 +237,7 @@ func TestLatestLog(t *testing.T) {
 	}
 }
 
-func TestRestore(t *testing.T) {
+func TestAppendEntriesStoreRestore(t *testing.T) {
 	entries := core.AppendEntries{
 		{
 			Term:         3,
@@ -262,3 +295,48 @@ func TestGet(t *testing.T) {
 		assert.Failf("Get entry", "entry mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestAppendEntriesStoreGetHeartbeatEntries(t *testing.T) {
+	fs := &FakeStore{}
+
+	store := &core.AppendEntriesStore{
+		Store: fs,
+	}
+
+	aes := core.AppendEntries{
+		{},
+		{
+			Term:         1,
+			Action:       core.STATE_ADD,
+			CounterDelta: 1,
+		},
+		{
+			Term:         2,
+			Action:       core.STATE_FLIP,
+			CounterDelta: 2,
+		},
+		{
+			Term:         3,
+			Action:       core.STATE_MINUS,
+			CounterDelta: 3,
+		},
+	}
+	for _, entry := range aes[1:] {
+		store.Append(entry)
+	}
+
+	if diff := cmp.Diff(aes, store.GetHeartbeatEntries(0)); diff != "" {
+		t.Fatalf("AEStore Get Heartbeat Entries mismatch: 0 (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(aes[1:], store.GetHeartbeatEntries(1)); diff != "" {
+		t.Fatalf("AEStore Get Heartbeat Entries mismatch: 1 (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(aes[3:], store.GetHeartbeatEntries(3)); diff != "" {
+		t.Fatalf("AEStore Get Heartbeat Entries mismatch: 3 (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(core.AppendEntries{}, store.GetHeartbeatEntries(8)); diff != "" {
+		t.Fatalf("AEStore Get Heartbeat Entries mismatch: 8 (-want +got):\n%s", diff)
+	}
+
+}
+
