@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"sync"
@@ -40,7 +41,8 @@ type BrainConfig struct {
 }
 
 type Brain struct {
-	entryMu sync.Mutex
+	entryMu   sync.Mutex
+	closeOnce sync.Once
 
 	entries      *core.AppendEntriesStore
 	l            *slog.Logger
@@ -50,6 +52,7 @@ type Brain struct {
 	id           string
 	addr         string
 	fellows      map[string]*Fellow
+	closeReason  error
 }
 
 func NewBrain(l *slog.Logger, deps *BrainDeps, cfg *BrainConfig) *Brain {
@@ -65,14 +68,15 @@ func NewBrain(l *slog.Logger, deps *BrainDeps, cfg *BrainConfig) *Brain {
 	}
 }
 
-func (b *Brain) Start(cfg core.TransportCfg) {
+func (b *Brain) Start(ctx context.Context, cfg core.TransportCfg) {
 	b.l.Info("brain starting", "node_id", b.id, "addr", b.addr)
+	go b.monitorCtx(ctx)
 
 	_, latestLog := b.entries.Restore()
 	b.raftState.RestoreTerm(latestLog.Term)
 	b.l.Info("restored term from log store", "node_id", b.id, "restored_term", latestLog.Term)
 
-	go b.handleStateEvent()
+	go b.handleStateEventLoop()
 
 	// initiate connection for rpc request FROM this node and response for that request
 	b.deps.Transport.RegisterSelf(b.id, b.addr, b.handleRPC, cfg)
@@ -95,6 +99,26 @@ func (b *Brain) Start(cfg core.TransportCfg) {
 	// default raft state role value is follower
 	b.switchToFollower()
 	b.l.Info("initial role set to follower", "node_id", b.id)
+}
+
+func (b *Brain) Close(reason error) {
+	b.closeOnce.Do(func() {
+		b.closeReason = reason
+		b.deps.Transport.CloseAll(reason)
+		b.deps.ElectionTimeoutTimer.Stop()
+		b.deps.ElectionTimer.Stop()
+		b.deps.HeartbeatTimer.Stop()
+		b.deps.WaitForElectionTimer.Stop()
+	})
+}
+
+func (b *Brain) CloseReason() error {
+	return b.closeReason
+}
+
+func (b *Brain) monitorCtx(ctx context.Context) {
+	<-ctx.Done()
+	b.Close(ctx.Err())
 }
 
 func (b *Brain) handleRPC(id string, bs []byte) {
@@ -252,7 +276,7 @@ func (b *Brain) handleStateActionReq(req rpc.StateActionReq) rpc.StateActionRes 
 	}
 }
 
-func (b *Brain) handleStateEvent() {
+func (b *Brain) handleStateEventLoop() {
 	b.l.Debug("state event handler started", "node_id", b.id)
 	for event := range b.raftState.EventCh() {
 		switch event {
@@ -280,7 +304,7 @@ func (b *Brain) switchToFollower() {
 	b.deps.ElectionTimer.Stop()
 	b.deps.WaitForElectionTimer.Stop()
 
-	go b.startElectionTimeoutCountdown()
+	go b.startElectionTimeoutLoop()
 }
 
 func (b *Brain) switchToCandidate() {
@@ -303,7 +327,7 @@ func (b *Brain) switchToLeader() {
 	}
 
 	b.l.Info("leader initialized", "node_id", b.id, "term", b.raftState.Term(), "latest_log_index", latestLogIdx)
-	go b.sendHeartbeat()
+	go b.heartbeatLoop()
 }
 
 func (b *Brain) applyState() {
@@ -320,7 +344,7 @@ func (b *Brain) applyState() {
 	}
 }
 
-func (b *Brain) sendHeartbeat() {
+func (b *Brain) heartbeatLoop() {
 	b.l.Debug("heartbeat loop started", "node_id", b.id)
 Outer:
 	for {
@@ -372,7 +396,7 @@ Outer:
 	}
 }
 
-func (b *Brain) startElectionTimeoutCountdown() {
+func (b *Brain) startElectionTimeoutLoop() {
 	b.l.Debug("starting election timeout countdown", "node_id", b.id)
 	for {
 		select {
