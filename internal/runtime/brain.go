@@ -188,7 +188,7 @@ func (b *Brain) handleRPC(id string, bs []byte) {
 		res := b.handleStateActionReq(rpc.DecodeStateActionReq(frame.Payload))
 
 		resFrame := rpc.Frame{
-			RPCType:    rpc.RPC_TYPE_APPEND_ENTRIES_RES,
+			RPCType:    rpc.RPC_TYPE_STATE_ACTION_RES,
 			RelationId: frame.RelationId,
 			Payload:    res.Encode(),
 		}

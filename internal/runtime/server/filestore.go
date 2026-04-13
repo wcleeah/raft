@@ -9,16 +9,16 @@ import (
 )
 
 type FileStore struct {
-	cond *sync.Cond
+	Cond *sync.Cond
 
 	processing bool
 	Path string
 }
 
 func (fs *FileStore) ReplaceFrom(idx uint32, entries core.AppendEntries) {
-	fs.cond.L.Lock()
-	defer fs.cond.L.Unlock()
-	defer fs.cond.Broadcast()
+	fs.Cond.L.Lock()
+	defer fs.Cond.L.Unlock()
+	defer fs.Cond.Broadcast()
 	fs.processing = true
 
 	fileIdx := idx - 1
@@ -60,7 +60,7 @@ func (fs *FileStore) ReplaceFrom(idx uint32, entries core.AppendEntries) {
 
 func (fs *FileStore) WaitForDone() {
 	for fs.processing {
-		fs.cond.Wait()
+		fs.Cond.Wait()
 	}
 }
 

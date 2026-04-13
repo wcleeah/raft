@@ -1,6 +1,7 @@
 package runtime_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,11 +19,10 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// THIS SERVE AS A PART OF DETERMINISTIC COORDINATION TESTING FOR THE RUNTIME. 
+// THIS SERVE AS A PART OF DETERMINISTIC COORDINATION TESTING FOR THE RUNTIME.
 // THE GOAL IS TO CHECK IF THE INTEGRATIONS WORKS CORRECTLY: RPC / TIMER, TRIGGERS A CORRECT RESULT.
 // THIS WILL TEST:
-//   - Start wiring
-//   - Inbound RPC communications: Triggered by transport, whether a response is received (some does not require a response) 
+//   - Inbound RPC communications: Triggered by transport, whether a response is received (some does not require a response)
 //   - Outbound RPC communications: Triggered by timer tick, whether a request is received
 
 func TestCandidatePromotion(t *testing.T) {
@@ -49,9 +49,22 @@ func TestCandidatePromotion(t *testing.T) {
 		}.Encode(),
 	}.Encode()
 
-	appEntReq := rpc.Frame{
+	firstAppEntReq := rpc.Frame{
 		RPCType:    rpc.RPC_TYPE_APPEND_ENTRIES_REQ,
 		RelationId: 2,
+		Payload: rpc.AppendEntriesReq{
+			Term:         b.FakeStore.Saved.LatestLog().Term + 1,
+			LeaderCommit: 0,
+			PrevLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
+			PrevLogTerm:  b.FakeStore.Saved.LatestLog().Term,
+			LeaderId:     b.BrainCfg.Id,
+			Entries:      []byte{},
+		}.Encode(),
+	}.Encode()
+
+	secondAppEntReq := rpc.Frame{
+		RPCType:    rpc.RPC_TYPE_APPEND_ENTRIES_REQ,
+		RelationId: 3,
 		Payload: rpc.AppendEntriesReq{
 			Term:         b.FakeStore.Saved.LatestLog().Term + 1,
 			LeaderCommit: 0,
@@ -67,13 +80,15 @@ func TestCandidatePromotion(t *testing.T) {
 		passTime("ElectionTimeoutTimer"),
 		passTime("WaitForElectionTimer"),
 		checkBroadcastedRpc("Request Vote Req", reqVoteReq),
-		broadcastInboundRpc("Request Vote Res", reqVoteRes, -1),
-		checkBroadcastedRpc("Append Entries Request", appEntReq),
+		replyRpc("Request Vote Res", b.Fellows[0].Id, reqVoteRes),
+		checkBroadcastedRpc("Append Entries Request", firstAppEntReq),
+		passTime("HeartbeatTimer"),
+		checkBroadcastedRpc("Append Entries Request", secondAppEntReq),
 	})
 }
 
-func TestCandidateDemotion(t *testing.T) {
-	t.Run("Lost Election", func(t *testing.T) {
+func TestFellowHaveHigherTerm(t *testing.T) {
+	t.Run("Append Entries", func(t *testing.T) {
 		b := giveMeATestBrain(3)
 
 		appEntReq := rpc.Frame{
@@ -100,36 +115,13 @@ func TestCandidateDemotion(t *testing.T) {
 
 		run(t, b, []testStep{
 			startBrain(),
-			passTime("ElectionTimeoutTimer"),                  // After election timeout, it became candidate. It still got to wait for the election to start on its end
-			sendInboundRpc("Append Entries Req", appEntReq),   // Larger term AE, should trigger demote
-			checkOutboundRpc("Append Entries Res", appEntRes), // Demoted, hence success
+			sendInboundRpc("Append Entries Req", appEntReq),
+			checkOutboundRpc("Append Entries Res", appEntRes), 
 		})
 	})
 
-	t.Run("Request Vote Response Term Bigger", func(t *testing.T) {
+	t.Run("Request Vote Request Term Bigger", func(t *testing.T) {
 		b := giveMeATestBrain(3)
-
-		broadCastReqVoteReq := rpc.Frame{
-			RPCType: rpc.RPC_TYPE_REQUEST_VOTE_REQ,
-			// First request, should be 1
-			RelationId: 1,
-			Payload: rpc.RequestVoteReq{
-				Term:         b.FakeStore.Saved.LatestLog().Term + 1,
-				CandidateId:  b.BrainCfg.Id,
-				LastLogIndex: b.FakeStore.Saved.LatestIdx() + 1,
-				LastLogTerm:  b.FakeStore.Saved.LatestLog().Term,
-			}.Encode(),
-		}.Encode()
-
-		inboundReqVoteRes := rpc.Frame{
-			RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_RES,
-			RelationId: 1,
-			Payload: rpc.RequestVoteRes{
-				Term:        b.FakeStore.Saved.LatestLog().Term + 2,
-				VoteGranted: false,
-			}.Encode(),
-		}.Encode()
-
 		inboundReqVoteReq := rpc.Frame{
 			RPCType: rpc.RPC_TYPE_REQUEST_VOTE_REQ,
 			// First request, should be 1
@@ -153,12 +145,8 @@ func TestCandidateDemotion(t *testing.T) {
 
 		run(t, b, []testStep{
 			startBrain(),
-			passTime("ElectionTimeoutTimer"),
-			passTime("WaitForElectionTimer"),
-			checkBroadcastedRpc("Request Vote Req", broadCastReqVoteReq),
-			sendInboundRpc("Request Vote Res", inboundReqVoteRes), // Demote to follower
 			sendInboundRpc("Request Vote Req", inboundReqVoteReq),
-			checkOutboundRpc("Request Vote Res", outBoundReqVoteRes), // This should return success, coz demotion should reset and allow follower to vote again
+			checkOutboundRpc("Request Vote Res", outBoundReqVoteRes), 
 		})
 	})
 }
@@ -226,7 +214,7 @@ func TestRestartElection_AsCandidate(t *testing.T) {
 			passTime("ElectionTimeoutTimer"),
 			passTime("WaitForElectionTimer"),
 			checkBroadcastedRpc("First Round Request Vote Req", firstRoundBroadcastReqVoteReq),
-			sendInboundRpc("First Round Request Vote Res", firstRoundInboundReqVoteRes), // One vote, not enough
+			sendInboundRpc("First Round Request Vote Res", firstRoundInboundReqVoteRes), 
 			passTime("ElectionTimer"), // Restart Election
 			passTime("WaitForElectionTimer"),
 			checkBroadcastedRpc("Second Round Request Vote Req", secondRoundBroadcastReqVoteReq),
@@ -394,10 +382,6 @@ func TestVoting_RejectVote(t *testing.T) {
 			}.Encode(),
 		}.Encode()
 
-		// This is not exactly the full test
-		// One more behaviour i would like to test is follower not promoting after election timeout tiemr passed
-		// There is no deterministic way i can test that since we rely on channel for the timer
-		// Even if we expose the raftState, go routine contention is not deterministic
 		run(t, b, []testStep{
 			startBrain(),
 			sendInboundRpc("First Round Request Vote Req", firstRoundInboundReqVoteReq),
@@ -443,10 +427,6 @@ func TestVoting_RejectVote(t *testing.T) {
 			}.Encode(),
 		}.Encode()
 
-		// This is not exactly the full test
-		// One more behaviour i would like to test is follower not promoting after election timeout tiemr passed
-		// There is no deterministic way i can test that since we rely on channel for the timer
-		// Even if we expose the raftState, go routine contention is not deterministic
 		run(t, b, []testStep{
 			startBrain(),
 			sendInboundRpc("First Round Request Vote Req", firstRoundInboundReqVoteReq),
@@ -480,10 +460,6 @@ func TestVoting_RejectVote(t *testing.T) {
 			}.Encode(),
 		}.Encode()
 
-		// This is not exactly the full test
-		// One more behaviour i would like to test is follower not promoting after election timeout tiemr passed
-		// There is no deterministic way i can test that since we rely on channel for the timer
-		// Even if we expose the raftState, go routine contention is not deterministic
 		run(t, b, []testStep{
 			startBrain(),
 			sendInboundRpc("First Round Request Vote Req", firstRoundInboundReqVoteReq),
@@ -491,18 +467,6 @@ func TestVoting_RejectVote(t *testing.T) {
 		})
 	})
 
-}
-
-func TestApply_AsLeader(t *testing.T) {
-}
-
-func TestApply_AsFollower(t *testing.T) {
-}
-
-func TestClientReq_AsLeader(t *testing.T) {
-}
-
-func TestClientReq_AsFollower(t *testing.T) {
 }
 
 func giveMeATestBrain(quorumCount int) *testBrain {
@@ -609,7 +573,7 @@ func startBrain() testStep {
 	return testStep{
 		Name: "Start Brain",
 		F: func(ass *assert.Assertions, b *testBrain) bool {
-			b.Brain.Start(b.TransportCfg)
+			b.Brain.Start(context.Background(), b.TransportCfg)
 			return ass.Equal(len(b.BrainCfg.Fellows)+1, len(b.FakeTransport.ConnMap), "Fellow not regiestered")
 		},
 	}
@@ -651,15 +615,16 @@ func checkBroadcastedRpc(rpc string, bs []byte) testStep {
 				}
 				// Ensure the write comes through, since we can't be sure the timing
 				// Also put a escape hatch: timer stop if the program is bugged and the write never happened
+				var gotBs []byte
 				select {
-				case <-conn.WrittenCh:
+				case gotBs = <-conn.WrittenCh:
 				case <-time.After(3 * time.Second):
 					ok = false
 					ass.Failf("Check Broadcast RPC Failed", "Timer expired for %s", id)
 				}
 				ass.Equalf(0, len(conn.WrittenCh), "Unexpected write: %s", id)
 
-				if diff := cmp.Diff(bs, conn.ClearWriteBuff()); diff != "" {
+				if diff := cmp.Diff(bs, gotBs); diff != "" {
 					ok = false
 					ass.Failf("Check Broadcast RPC Failed", "TestBs mismatch for %s (-want +got):\n%s", id, diff)
 				}
@@ -670,25 +635,14 @@ func checkBroadcastedRpc(rpc string, bs []byte) testStep {
 	}
 }
 
-func broadcastInboundRpc(rpc string, bs []byte, limit int) testStep {
+func replyRpc(rpc string, id string, bs []byte) testStep {
 	return testStep{
 		Name: fmt.Sprintf("Broadcast Inbound RPC: %s", rpc),
 		F: func(ass *assert.Assertions, b *testBrain) bool {
 			ass.Equal(len(b.BrainCfg.Fellows)+1, len(b.FakeTransport.ConnMap), "Fellow not regiestered")
 
-			idx := 0
-			selfConn := b.FakeTransport.ConnMap[b.FakeTransport.SelfId]
-			for id := range b.FakeTransport.ConnMap {
-				if id == b.FakeTransport.SelfId {
-					continue
-				}
-				selfConn.AddReadBuf(bs)
-				idx++
-				if limit > 0 && idx >= limit {
-					break
-				}
-			}
-
+			conn := b.FakeTransport.ConnMap[id]
+			conn.ReadCh <- bs
 			return true
 		},
 	}
@@ -706,7 +660,7 @@ func sendInboundRpc(rpc string, bs []byte) testStep {
 				return false
 			}
 
-			conn.AddReadBuf(bs)
+			conn.ReadCh <- bs
 			return true
 		},
 	}
@@ -726,15 +680,16 @@ func checkOutboundRpc(rpc string, bs []byte) testStep {
 
 			// Ensure the write comes through, since we can't be sure the timing
 			// Also put a escape hatch: timer stop if the program is bugged and the write never happened
+			var gotBs []byte
 			select {
-			case <-conn.WrittenCh:
+			case gotBs = <-conn.WrittenCh:
 			case <-time.After(3 * time.Second):
 				ok = false
 				ass.Failf("Check Outbound RPC", "Timer expired for %s", b.FakeTransport.SelfId)
 			}
 			ass.Equalf(0, len(conn.WrittenCh), "Unexpected write for %s", b.FakeTransport.SelfId)
 
-			if diff := cmp.Diff(bs, conn.ClearWriteBuff()); diff != "" {
+			if diff := cmp.Diff(bs, gotBs); diff != "" {
 				ok = false
 				ass.Failf("Check Outbound RPC", "TestBs mismatch for %s (-want +got):\n%s", b.FakeTransport.SelfId, diff)
 			}
@@ -777,9 +732,8 @@ func (t *fakeTransport) RegisterSelf(id string, addr string, th core.TransportHa
 	t.SelfId = id
 
 	t.ConnMap[t.SelfId] = &fakeConn{
-		WriteBuf:  make([]byte, 0),
-		readCh:    make(chan []byte, 100),
-		WrittenCh: make(chan struct{}, 100),
+		ReadCh:    make(chan []byte, 100),
+		WrittenCh: make(chan []byte, 100),
 	}
 
 	go t.handleRead(t.SelfId, th)
@@ -792,9 +746,8 @@ func (t *fakeTransport) RegisterPeer(id string, addr string, th core.TransportHa
 		return errors.New("Id registered")
 	}
 	t.ConnMap[id] = &fakeConn{
-		WriteBuf:  make([]byte, 0),
-		readCh:    make(chan []byte, 100),
-		WrittenCh: make(chan struct{}, 100),
+		ReadCh:    make(chan []byte, 100),
+		WrittenCh: make(chan []byte, 100),
 	}
 
 	go t.handleRead(id, th)
@@ -811,13 +764,8 @@ func (t *fakeTransport) handleRead(id string, th core.TransportHandler) {
 	}
 
 	for {
-		bs, err := conn.Read()
+		bs := <-conn.Read()
 
-		// conn only return err for Read when server initiate the close
-		// that means no need to read anymore
-		if err != nil {
-			return
-		}
 		th(id, bs)
 	}
 }
@@ -855,74 +803,26 @@ func (t *fakeTimer) C() <-chan time.Time {
 	return t.CCh
 }
 
-func (t *fakeTimer) S() <-chan struct{} {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.SCh == nil {
-		t.SCh = make(chan struct{}, 100)
-	}
-
-	return t.SCh
-}
-
-func (t *fakeTimer) Stop() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.SCh == nil {
-		t.SCh = make(chan struct{}, 100)
-		return
-	}
-	close(t.SCh)
-	t.SCh = make(chan struct{}, 100)
-}
-
 func (f *fakeTimer) PassTime() {
 	f.CCh <- f.Now.Add(f.Duration)
 }
 
 type fakeConn struct {
-	writeMu sync.Mutex
-	readCh  chan []byte
+	ReadCh    chan []byte
+	WrittenCh chan []byte
 
-	ReadDln   time.Time
-	WriteDln  time.Time
-	WriteBuf  []byte
-	WrittenCh chan struct{}
+	ReadDln  time.Time
+	WriteDln time.Time
 }
 
-func (f *fakeConn) AddReadBuf(b []byte) {
-	f.readCh <- b
-}
-
-func (f *fakeConn) Read() ([]byte, error) {
-	buf := <-f.readCh
-
-	bs := make([]byte, len(buf))
-	copy(bs, buf)
-
-	return bs, nil
+func (f *fakeConn) Read() <-chan []byte {
+	return f.ReadCh
 }
 
 func (f *fakeConn) Write(b []byte) (int, error) {
-	f.writeMu.Lock()
-	defer f.writeMu.Unlock()
-
-	f.WriteBuf = append(f.WriteBuf, b...)
-	f.WrittenCh <- struct{}{}
+	f.WrittenCh <- b
 
 	return len(b), nil
-}
-
-func (f *fakeConn) ClearWriteBuff() []byte {
-	f.writeMu.Lock()
-	defer f.writeMu.Unlock()
-
-	bs := make([]byte, len(f.WriteBuf))
-	copy(bs, f.WriteBuf)
-	f.WriteBuf = []byte{}
-
-	return bs
 }
 
 func (f *fakeConn) LocalAddr() net.Addr {

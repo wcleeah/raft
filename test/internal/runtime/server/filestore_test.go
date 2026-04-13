@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"com.lwc.raft/internal/core"
@@ -14,7 +15,7 @@ func TestFileStoreRestore(t *testing.T) {
 	assert := assert.New(t)
 
 	dir := t.TempDir()
-	fs := &server.FileStore{Path: filepath.Join(dir, "store.bin")}
+	fs := &server.FileStore{Cond: sync.NewCond(&sync.Mutex{}), Path: filepath.Join(dir, "store.bin")}
 
 	// missing file returns nil
 	restored := fs.Restore()
@@ -50,7 +51,7 @@ func TestFileStoreReplaceFrom(t *testing.T) {
 	assert := assert.New(t)
 
 	dir := t.TempDir()
-	fs := &server.FileStore{Path: filepath.Join(dir, "store.bin")}
+	fs := &server.FileStore{Cond: sync.NewCond(&sync.Mutex{}), Path: filepath.Join(dir, "store.bin")}
 
 	// initial write on empty store
 	first := core.AppendEntries{
@@ -93,7 +94,7 @@ func TestFileStoreReplaceFrom(t *testing.T) {
 
 func TestFileStoreReplaceFromFailCase(t *testing.T) {
 	dir := t.TempDir()
-	fs := &server.FileStore{Path: filepath.Join(dir, "store.bin")}
+	fs := &server.FileStore{Cond: sync.NewCond(&sync.Mutex{}), Path: filepath.Join(dir, "store.bin")}
 
 	entries := core.AppendEntries{
 		{
