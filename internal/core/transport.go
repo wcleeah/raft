@@ -5,7 +5,7 @@ import (
 
 )
 
-type TransportHandler func(id string, bs []byte)
+type TransportHandler func(id string, bs []byte) ([]byte, error)
 type TransportCfg struct {
 	ReadDln  time.Duration
 	WriteDln time.Duration

@@ -62,6 +62,7 @@ type Brain struct {
 	closed        atomic.Bool
 	roleGen       int
 	roleCtxCancel context.CancelFunc
+	gotAe         atomic.Bool
 }
 
 func NewBrain(l *slog.Logger, deps *BrainDeps, cfg *BrainConfig) *Brain {
@@ -90,13 +91,21 @@ func (b *Brain) Start(ctx context.Context, cfg core.TransportCfg) {
 	go b.handleStateEventLoop()
 
 	// initiate connection for rpc request FROM this node and response for that request
-	b.deps.Transport.RegisterSelf(b.id, b.addr, b.handleRPC, cfg)
+	err := b.deps.Transport.RegisterSelf(b.id, b.addr, b.handleRPC, cfg)
+	if err != nil {
+		b.Close(err)
+		return
+	}
 	b.raftState.RegisterNode(b.id)
 	b.l.Debug("registered self transport", "node_id", b.id, "addr", b.addr)
 
 	// initiate connection for rpc request TO this node and response for that request
 	for _, fellow := range b.fellows {
-		b.deps.Transport.RegisterPeer(fellow.Id, fellow.Addr, b.handleRPC, cfg)
+		err := b.deps.Transport.RegisterPeer(fellow.Id, fellow.Addr, b.handleRPC, cfg)
+		if err != nil {
+			b.Close(err)
+			return
+		}
 		b.raftState.RegisterNode(fellow.Id)
 		b.l.Debug("registered peer", "node_id", b.id, "peer_id", fellow.Id, "peer_addr", fellow.Addr)
 
@@ -142,16 +151,16 @@ func (b *Brain) monitorCtx(ctx context.Context) {
 	}
 }
 
-func (b *Brain) handleRPC(id string, bs []byte) {
+func (b *Brain) handleRPC(id string, bs []byte) ([]byte, error) {
 	if b.closed.Load() {
-		return
+		return nil, b.closeReason
 	}
 
 	frame := rpc.DecodeRPCFrame(bs)
 	fellow, ok := b.fellows[id]
 	if id != b.id && !ok {
 		b.l.Warn("received RPC from unknown peer, ignoring", "node_id", b.id, "peer_id", id)
-		return
+		return nil, errors.New("Unknown peer")
 	}
 
 	switch frame.RPCType {
@@ -166,9 +175,9 @@ func (b *Brain) handleRPC(id string, bs []byte) {
 		}
 
 		if b.closed.Load() {
-			return
+			return nil, b.closeReason
 		}
-		b.deps.Transport.Send(id, resFrame.Encode())
+		return resFrame.Encode(), nil
 	case rpc.RPC_TYPE_APPEND_ENTRIES_REQ:
 		b.l.Debug("received AppendEntries request", "node_id", b.id, "peer_id", id, "relation_id", frame.RelationId)
 		res := b.handleAppendEntriesRequest(id, rpc.DecodeAppendEntriesReq(frame.Payload))
@@ -180,9 +189,9 @@ func (b *Brain) handleRPC(id string, bs []byte) {
 		}
 
 		if b.closed.Load() {
-			return
+			return nil, b.closeReason
 		}
-		b.deps.Transport.Send(id, resFrame.Encode())
+		return resFrame.Encode(), nil
 	case rpc.RPC_TYPE_STATE_ACTION_REQ:
 		b.l.Debug("received StateAction request", "node_id", b.id, "peer_id", id, "relation_id", frame.RelationId)
 		res := b.handleStateActionReq(rpc.DecodeStateActionReq(frame.Payload))
@@ -194,9 +203,9 @@ func (b *Brain) handleRPC(id string, bs []byte) {
 		}
 
 		if b.closed.Load() {
-			return
+			return nil, b.closeReason
 		}
-		b.deps.Transport.Send(id, resFrame.Encode())
+		return resFrame.Encode(), nil
 	case rpc.RPC_TYPE_REQUEST_VOTE_RES:
 		b.l.Debug("received RequestVote response", "node_id", b.id, "peer_id", id, "relation_id", frame.RelationId)
 		b.handleVoteResult(id, rpc.DecodeRequestVoteRes(frame.Payload))
@@ -208,15 +217,17 @@ func (b *Brain) handleRPC(id string, bs []byte) {
 
 		if relatedPayload == nil {
 			b.l.Warn("no related payload for AE response, ignoring", "node_id", b.id, "peer_id", id, "relation_id", frame.RelationId)
-			return
+			return nil, b.closeReason
 		}
 		aer, ok := relatedPayload.(*rpc.AppendEntriesReq)
 		if !ok {
 			b.l.Warn("related payload is not AppendEntriesReq, ignoring", "node_id", b.id, "peer_id", id, "relation_id", frame.RelationId)
-			return
+			return nil, b.closeReason
 		}
 		b.handleAppendEntriesResult(id, rpc.DecodeAppendEntriesRes(frame.Payload), *aer)
 	}
+
+	return nil, errors.New("No response")
 }
 
 func (b *Brain) handleVoteRequest(req rpc.RequestVoteReq) rpc.RequestVoteRes {
@@ -265,6 +276,7 @@ func (b *Brain) handleAppendEntriesRequest(_ string, req rpc.AppendEntriesReq) r
 	}
 
 	b.raftState.UpdateCommitIdx(min(latestLogIdx, req.LeaderCommit))
+	b.gotAe.Store(true)
 
 	return rpc.AppendEntriesRes{
 		Term:    b.raftState.Term(),
@@ -288,6 +300,13 @@ func (b *Brain) handleStateActionReq(req rpc.StateActionReq) rpc.StateActionRes 
 		if errors.Is(err, core.RaftStateNotALeaderErr) {
 			leaderId := b.raftState.LeaderId()
 			b.l.Warn("rejecting state action: not leader", "node_id", b.id, "redirect_to", leaderId)
+
+			if leaderId == "" {
+				return rpc.StateActionRes{
+					Success:      false,
+					RedirectAddr: "",
+				}
+			}
 			return rpc.StateActionRes{
 				Success:      false,
 				RedirectAddr: b.fellows[leaderId].Addr,
@@ -470,6 +489,11 @@ func (b *Brain) applyState() {
 }
 
 func (b *Brain) handleElectionTimeoutTimerTick() error {
+	b.l.Debug("in handle etttt", "node_id", b.id, "votedFor", b.raftState.VotedFor(), "term", b.raftState.Role(), "votedForTerm", b.raftState.VotedForTerm())
+	if b.gotAe.Load() {
+		b.gotAe.Store(false)
+		return nil
+	}
 	if b.raftState.IsVoted() {
 		b.l.Debug("election timeout fired but already voted, resetting", "node_id", b.id)
 		return nil

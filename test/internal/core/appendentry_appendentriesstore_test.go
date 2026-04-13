@@ -12,6 +12,14 @@ type FakeStore struct {
 	Saved core.AppendEntries
 }
 
+func (s *FakeStore) Append(entry core.AppendEntry) {
+	if s.Saved == nil {
+		s.Saved = make(core.AppendEntries, 1)
+	}
+
+	s.Saved = append(s.Saved, entry)
+}
+
 func (s *FakeStore) ReplaceFrom(idx uint32, entries core.AppendEntries) {
 	if s.Saved == nil {
 		s.Saved = make(core.AppendEntries, 1)
@@ -59,6 +67,9 @@ func TestAppendEntriesStoreAppendAndCopy(t *testing.T) {
 
 	if diff := cmp.Diff(aes, store.Copy()); diff != "" {
 		t.Fatalf("AEStore Copy Entries mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(aes, fs.Saved); diff != "" {
+		t.Fatalf("AEStore persisted entries mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -339,4 +350,3 @@ func TestAppendEntriesStoreGetHeartbeatEntries(t *testing.T) {
 	}
 
 }
-

@@ -130,6 +130,9 @@ func (ae *AppendEntriesStore) Append(entry AppendEntry) {
 		ae.entries = make([]AppendEntry, 1)
 	}
 	ae.entries = append(ae.entries, entry)
+	if ae.Store != nil {
+		ae.Store.Append(entry)
+	}
 }
 
 func (ae *AppendEntriesStore) Replicate(bs []byte, prevLogIndex uint32, prevLogTerm uint32) (uint32, error) {

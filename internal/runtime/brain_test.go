@@ -621,6 +621,14 @@ type fakeStore struct {
 	Saved core.AppendEntries
 }
 
+func (s *fakeStore) Append(entry core.AppendEntry) {
+	if s.Saved == nil {
+		s.Saved = make(core.AppendEntries, 1)
+	}
+
+	s.Saved = append(s.Saved, entry)
+}
+
 func (s *fakeStore) ReplaceFrom(idx uint32, entries core.AppendEntries) {
 	if s.Saved == nil {
 		s.Saved = make(core.AppendEntries, 1)

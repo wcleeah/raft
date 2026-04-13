@@ -32,7 +32,7 @@ func TestSimpleRead(t *testing.T) {
 	}
 	d.SetConn(netConn)
 
-	serverConn := server.Conn{
+	serverConn := server.Dial{
 		Addr:    "test",
 		Gcf:     d.Gcf,
 		Now:     d.Now,
@@ -68,7 +68,7 @@ func TestSimpleWrite(t *testing.T) {
 	}
 	d.SetConn(netConn)
 
-	serverConn := server.Conn{
+	serverConn := server.Dial{
 		Addr:     "test",
 		Gcf:      d.Gcf,
 		Now:      d.Now,
@@ -107,7 +107,7 @@ func TestMultiWrite(t *testing.T) {
 	}
 	d.SetConn(netConn)
 
-	serverConn := server.Conn{
+	serverConn := server.Dial{
 		Addr:     "test",
 		Gcf:      d.Gcf,
 		Now:      d.Now,
@@ -145,7 +145,7 @@ func TestClose(t *testing.T) {
 		Cond: sync.NewCond(&sync.Mutex{}),
 	})
 
-	serverConn := server.Conn{
+	serverConn := server.Dial{
 		Addr: "test",
 		Gcf:  d.Gcf,
 		Now:  d.Now,
@@ -181,7 +181,7 @@ func TestKeetTrying_ReadError(t *testing.T) {
 	}
 	d.SetConn(netConn)
 
-	serverConn := server.Conn{
+	serverConn := server.Dial{
 		Addr:    "test",
 		Gcf:     d.Gcf,
 		Now:     d.Now,
@@ -234,7 +234,7 @@ func TestKeepTrying_WriteError(t *testing.T) {
 	}
 	d.SetConn(netConn)
 
-	serverConn := server.Conn{
+	serverConn := server.Dial{
 		Addr:     "test",
 		Gcf:      d.Gcf,
 		Now:      d.Now,
@@ -290,7 +290,7 @@ func TestKeepTrying_ClosedConn(t *testing.T) {
 	}
 	d.SetConn(netConn)
 
-	serverConn := server.Conn{
+	serverConn := server.Dial{
 		Addr:     "test",
 		Gcf:      d.Gcf,
 		Now:      d.Now,

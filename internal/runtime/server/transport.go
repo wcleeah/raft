@@ -9,57 +9,61 @@ import (
 )
 
 var (
-	TransIdNotRegErr = errors.New("Id not registered") 
-	TransIdRegErr = errors.New("Id registered")
+	TransIdNotRegErr = errors.New("Id not registered")
+	TransIdRegErr    = errors.New("Id registered")
 )
 
 type Transport struct {
 	once sync.Once
 
-	connMap   map[string]*Conn
+	dialMap   map[string]*Dial
 	selfId    string
-	ListenGcf GetConnFunc
+	selfLis   *Listen
+	ListenGcf ListenFunc
 	DialGcf   GetConnFunc
 }
 
 func (t *Transport) Send(id string, bs []byte) error {
-	if t.connMap == nil {
-		return TransIdNotRegErr 
+	if t.dialMap == nil {
+		return TransIdNotRegErr
 	}
-	if _, ok := t.connMap[id]; !ok {
+	if _, ok := t.dialMap[id]; !ok {
 		return TransIdNotRegErr
 	}
 
-	return t.connMap[id].Write(bs)
+	return t.dialMap[id].Write(bs)
 }
 
 func (t *Transport) RegisterSelf(id string, addr string, th core.TransportHandler, cfg core.TransportCfg) error {
 	t.setupMap()
-	if _, ok := t.connMap[id]; ok {
+	if t.selfLis != nil {
 		return TransIdRegErr
 	}
 
-	t.connMap[id] = &Conn{
+	t.selfLis = &Listen{
 		Addr:     addr,
-		Gcf:      t.ListenGcf,
+		Lf:       t.ListenGcf,
 		Now:      time.Now,
 		ReadDln:  cfg.ReadDln,
 		WriteDln: cfg.WriteDln,
 	}
 
-	go t.connMap[id].Start()
-	go t.handleRead(id, th)
+	err := t.selfLis.Start()
+	if err != nil {
+		return err
+	}
+	go t.handleListenRead(id, th)
 
 	return nil
 }
 
 func (t *Transport) RegisterPeer(id string, addr string, th core.TransportHandler, cfg core.TransportCfg) error {
 	t.setupMap()
-	if _, ok := t.connMap[id]; ok {
+	if _, ok := t.dialMap[id]; ok {
 		return TransIdRegErr
 	}
 
-	t.connMap[id] = &Conn{
+	t.dialMap[id] = &Dial{
 		Addr:     addr,
 		Gcf:      t.DialGcf,
 		Now:      time.Now,
@@ -67,43 +71,74 @@ func (t *Transport) RegisterPeer(id string, addr string, th core.TransportHandle
 		WriteDln: cfg.WriteDln,
 	}
 
-	go t.connMap[id].Start()
-	go t.handleRead(id, th)
+	go t.dialMap[id].Start()
+	go t.handleDialRead(id, th)
 
 	return nil
 }
 
 func (t *Transport) CloseAll(reason error) {
-	if t.connMap == nil {
-		return
+	if t.dialMap != nil {
+		for _, v := range t.dialMap {
+			v.Close(reason)
+		}
 	}
-	for _, v := range t.connMap {
-		v.Close(reason)
+	if t.selfLis != nil {
+		t.selfLis.Close(reason)
 	}
 }
 
 func (t *Transport) setupMap() {
 	t.once.Do(func() {
-		if t.connMap == nil {
-			t.connMap = make(map[string]*Conn, 0)
+		if t.dialMap == nil {
+			t.dialMap = make(map[string]*Dial, 0)
 		}
 	})
 }
 
-func (t *Transport) handleRead(id string, th core.TransportHandler) {
-	conn, ok := t.connMap[id]
-	if !ok {
+func (t *Transport) handleListenRead(id string, th core.TransportHandler) {
+	if t.selfLis == nil {
 		return
 	}
 
 	for {
-		bs, err := conn.Read()
+		dto, err := t.selfLis.Read()
 
 		// conn only return err for Read when server initiate the close
 		// that means no need to read anymore
 		if err != nil {
 			return
 		}
-		th(id, bs)
+
+		res, err := th(id, dto.Frame)
+		if err != nil {
+			continue
+		}
+		t.selfLis.Write(ListenDTO{
+			Id:    dto.Id,
+			Frame: res,
+		})
+	}
+}
+
+func (t *Transport) handleDialRead(id string, th core.TransportHandler) {
+	dial, ok := t.dialMap[id]
+	if !ok {
+		return
+	}
+
+	for {
+		bs, err := dial.Read()
+
+		// conn only return err for Read when server initiate the close
+		// that means no need to read anymore
+		if err != nil {
+			return
+		}
+		res, err := th(id, bs)
+		if err != nil {
+			continue
+		}
+		dial.Write(res)
 	}
 }

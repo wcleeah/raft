@@ -124,6 +124,21 @@ func (rs *RaftState) Threshold() uint32 {
 	return rs.threshold
 }
 
+func (rs *RaftState) VotedFor() string {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+
+	return rs.votedFor
+}
+
+func (rs *RaftState) VotedForTerm() uint32 {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+
+	return rs.votedForTerm
+}
+
+
 func (rs *RaftState) UpdateRole(role RaftRole) bool {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()

@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -40,6 +41,10 @@ func TestFileStoreRestore(t *testing.T) {
 		},
 	}
 	fs.ReplaceFrom(1, entries)
+
+	bs, err := os.ReadFile(fs.Path)
+	assert.NoError(err)
+	assert.Equal("[\n  {\n    \"term\": 1,\n    \"counter_delta\": 10,\n    \"action\": \"add\"\n  },\n  {\n    \"term\": 2,\n    \"counter_delta\": 5,\n    \"action\": \"minus\"\n  },\n  {\n    \"term\": 3,\n    \"counter_delta\": 0,\n    \"action\": \"flip\"\n  }\n]\n", string(bs))
 
 	restored = fs.Restore()
 	if diff := cmp.Diff(entries, restored); diff != "" {

@@ -116,7 +116,7 @@ func TestFellowHaveHigherTerm(t *testing.T) {
 		run(t, b, []testStep{
 			startBrain(),
 			sendInboundRpc("Append Entries Req", appEntReq),
-			checkOutboundRpc("Append Entries Res", appEntRes), 
+			checkOutboundRpc("Append Entries Res", appEntRes),
 		})
 	})
 
@@ -146,7 +146,7 @@ func TestFellowHaveHigherTerm(t *testing.T) {
 		run(t, b, []testStep{
 			startBrain(),
 			sendInboundRpc("Request Vote Req", inboundReqVoteReq),
-			checkOutboundRpc("Request Vote Res", outBoundReqVoteRes), 
+			checkOutboundRpc("Request Vote Res", outBoundReqVoteRes),
 		})
 	})
 }
@@ -214,7 +214,7 @@ func TestRestartElection_AsCandidate(t *testing.T) {
 			passTime("ElectionTimeoutTimer"),
 			passTime("WaitForElectionTimer"),
 			checkBroadcastedRpc("First Round Request Vote Req", firstRoundBroadcastReqVoteReq),
-			sendInboundRpc("First Round Request Vote Res", firstRoundInboundReqVoteRes), 
+			sendInboundRpc("First Round Request Vote Res", firstRoundInboundReqVoteRes),
 			passTime("ElectionTimer"), // Restart Election
 			passTime("WaitForElectionTimer"),
 			checkBroadcastedRpc("Second Round Request Vote Req", secondRoundBroadcastReqVoteReq),
@@ -766,12 +766,24 @@ func (t *fakeTransport) handleRead(id string, th core.TransportHandler) {
 	for {
 		bs := <-conn.Read()
 
-		th(id, bs)
+		res, err := th(id, bs)
+		if err != nil {
+			continue
+		}
+		conn.Write(res)
 	}
 }
 
 type fakeStore struct {
 	Saved core.AppendEntries
+}
+
+func (s *fakeStore) Append(entry core.AppendEntry) {
+	if s.Saved == nil {
+		s.Saved = make(core.AppendEntries, 1)
+	}
+
+	s.Saved = append(s.Saved, entry)
 }
 
 func (s *fakeStore) ReplaceFrom(idx uint32, entries core.AppendEntries) {

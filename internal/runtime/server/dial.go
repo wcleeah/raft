@@ -11,15 +11,9 @@ import (
 	"time"
 )
 
-var (
-	DEFAULT_READ_DLN  = 10 * time.Second
-	DEFAULT_WRITE_DLN = 10 * time.Second
-)
-
 type GetConnFunc = func(network string, addr string) (net.Conn, error)
-type NowFunc = func() time.Time
 
-type Conn struct {
+type Dial struct {
 	closeOnce sync.Once
 	setupOnce sync.Once
 	cond      *sync.Cond
@@ -38,7 +32,7 @@ type Conn struct {
 	closeReason error
 }
 
-func (c *Conn) Start() error {
+func (c *Dial) Start() error {
 	c.cond = sync.NewCond(&sync.Mutex{})
 	err := c.getConn()
 	if err != nil {
@@ -59,7 +53,7 @@ func (c *Conn) Start() error {
 	return nil
 }
 
-func (c *Conn) Read() ([]byte, error) {
+func (c *Dial) Read() ([]byte, error) {
 	if c.closed.Load() {
 		return nil, c.closeReason
 	}
@@ -75,7 +69,7 @@ func (c *Conn) Read() ([]byte, error) {
 	}
 }
 
-func (c *Conn) Write(bs []byte) error {
+func (c *Dial) Write(bs []byte) error {
 	if c.closed.Load() {
 		return c.closeReason
 	}
@@ -92,7 +86,7 @@ func (c *Conn) Write(bs []byte) error {
 	return nil
 }
 
-func (c *Conn) Close(reason error) {
+func (c *Dial) Close(reason error) {
 	c.closeOnce.Do(func() {
 		if c.closeCh == nil {
 			c.closeCh = make(chan struct{})
@@ -107,7 +101,7 @@ func (c *Conn) Close(reason error) {
 	})
 }
 
-func (c *Conn) waitConn() (net.Conn, error) {
+func (c *Dial) waitConn() (net.Conn, error) {
 	c.cond.L.Lock()
 	defer c.cond.L.Unlock()
 	if c.closed.Load() {
@@ -125,7 +119,7 @@ func (c *Conn) waitConn() (net.Conn, error) {
 	return c.conn, nil
 }
 
-func (c *Conn) markBadConn(conn net.Conn) error {
+func (c *Dial) markBadConn(conn net.Conn) error {
 	c.cond.L.Lock()
 	defer c.cond.L.Unlock()
 	if c.closed.Load() {
@@ -140,7 +134,7 @@ func (c *Conn) markBadConn(conn net.Conn) error {
 	return nil
 }
 
-func (c *Conn) getConn() error {
+func (c *Dial) getConn() error {
 	c.cond.L.Lock()
 	defer c.cond.Broadcast()
 	defer c.cond.L.Unlock()
@@ -175,7 +169,7 @@ func (c *Conn) getConn() error {
 	return nil
 }
 
-func (c *Conn) read() {
+func (c *Dial) read() {
 	// there is still a little bit of rpc logic here (len as the first 4 byte, rpc byte layout assumption)
 	// but i think thats fine for now
 	lenBytes := make([]byte, 4)
@@ -190,6 +184,9 @@ Outer:
 		}
 
 		conn, err := c.waitConn()
+		if conn == nil {
+			continue
+		}
 		if err != nil {
 			break
 		}
@@ -232,6 +229,9 @@ Outer:
 			if err != nil {
 				break Outer
 			}
+			if conn == nil {
+				continue
+			}
 			conn.SetReadDeadline(c.Now().Add(c.ReadDln))
 			_, err = io.ReadFull(conn, bs)
 			if err != nil {
@@ -266,7 +266,7 @@ Outer:
 
 }
 
-func (c *Conn) write() {
+func (c *Dial) write() {
 Outer:
 	for {
 		var bs []byte
@@ -290,6 +290,9 @@ Outer:
 			conn, err := c.waitConn()
 			if err != nil {
 				break Outer
+			}
+			if conn == nil {
+				continue
 			}
 
 			if c.WriteDln == 0 {
