@@ -1,6 +1,7 @@
 package server
 
 import (
+	"math/rand/v2"
 	"sync"
 	"time"
 )
@@ -8,33 +9,52 @@ import (
 type Timer struct {
 	mu sync.Mutex
 
-	s        chan struct{}
-	Duration time.Duration
-	After    func(d time.Duration) <-chan time.Time
+	Min          time.Duration
+	Max          time.Duration
+	StartupGrace time.Duration
+	After        func(d time.Duration) <-chan time.Time
+	Rand         *rand.Rand
+
+	used bool
 }
 
 func (t *Timer) C() <-chan time.Time {
-	return t.After(t.Duration)
-}
-
-func (t *Timer) S() <-chan struct{} {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.s == nil {
-		t.s = make(chan struct{}, 100)
+	after := t.After
+	if after == nil {
+		after = time.After
 	}
 
-	return t.s
+	return after(t.nextDuration())
 }
 
-func (t *Timer) Stop() {
+func (t *Timer) nextDuration() time.Duration {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if t.s == nil {
-		t.s = make(chan struct{}, 100)
-		return
+	min := t.Min
+	max := t.Max
+	if min == 0 {
+		min = max
 	}
-	close(t.s)
-	t.s = make(chan struct{}, 100)
+	if max == 0 {
+		max = min
+	}
+
+	duration := min
+	if max > min {
+		rng := t.Rand
+		if rng == nil {
+			rng = rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
+			t.Rand = rng
+		}
+
+		delta := max - min
+		duration += time.Duration(rng.Int64N(int64(delta) + 1))
+	}
+	if !t.used {
+		t.used = true
+		duration += t.StartupGrace
+	}
+
+	return duration
 }

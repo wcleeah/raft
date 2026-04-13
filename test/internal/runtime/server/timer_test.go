@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"math/rand/v2"
 	"testing"
 	"time"
 
@@ -24,7 +25,7 @@ func (f *fakeTime) Fire() {
 	f.T <- f.Now.Add(d)
 }
 
-func TestC(t *testing.T) {
+func TestTimerC(t *testing.T) {
 	assert := assert.New(t)
 
 	testDur := 5 * time.Second
@@ -35,8 +36,9 @@ func TestC(t *testing.T) {
 		Now: now,
 	}
 	timer := &server.Timer{
-		Duration: testDur,
-		After:    ft.After,
+		Min:   testDur,
+		Max:   testDur,
+		After: ft.After,
 	}
 
 	go func() {
@@ -48,15 +50,58 @@ func TestC(t *testing.T) {
 	assert.Equal(now.Add(testDur), timeReceived)
 }
 
-func TestStop(t *testing.T) {
+func TestTimerCStartupGrace(t *testing.T) {
+	assert := assert.New(t)
 
-	timer := &server.Timer{}
-
-	ch := timer.S()
-	timer.Stop()
-	select {
-	case <-ch:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timer.S did not fire")
+	testDur := 5 * time.Second
+	startupGrace := 3 * time.Second
+	now := time.Now()
+	ft := &fakeTime{
+		T:   make(chan time.Time, 2),
+		D:   make(chan time.Duration, 2),
+		Now: now,
 	}
+	timer := &server.Timer{
+		Min:          testDur,
+		Max:          testDur,
+		StartupGrace: startupGrace,
+		After:        ft.After,
+	}
+
+	go func() {
+		ft.Fire()
+		ft.Fire()
+	}()
+
+	firstTick := <-timer.C()
+	secondTick := <-timer.C()
+
+	assert.Equal(now.Add(testDur+startupGrace), firstTick)
+	assert.Equal(now.Add(testDur), secondTick)
+}
+
+func TestTimerCRandomRange(t *testing.T) {
+	assert := assert.New(t)
+
+	min := 5 * time.Second
+	max := 7 * time.Second
+	ft := &fakeTime{
+		T:   make(chan time.Time, 1),
+		D:   make(chan time.Duration, 1),
+		Now: time.Now(),
+	}
+	timer := &server.Timer{
+		Min:   min,
+		Max:   max,
+		After: ft.After,
+		Rand:  rand.New(rand.NewPCG(1, 2)),
+	}
+
+	ch := timer.C()
+	duration := <-ft.D
+	assert.GreaterOrEqual(duration, min)
+	assert.LessOrEqual(duration, max)
+
+	ft.T <- ft.Now.Add(duration)
+	<-ch
 }

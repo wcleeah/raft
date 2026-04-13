@@ -89,5 +89,12 @@ Note:
 - The example configs intentionally use slightly different election timings per node.
 
 ## Learnings
+- Deterministic testing: fair to say the current project structure is not suitable for a full fledge deterministic testing. The best way to do is a single event loop architecture.
+- However, I decided to go with the sparse concurrency architecture knowing this, to gain more experience and exposure on concurrency development especially in Go, i learnt a lot.
+  - sync.Cond is really a underrated feature, but it is also very easily misused. Mutex, channel cover most of the cases.
+  - Select + Channel really is a headache, i developed a love hate relationship with the pair.
+  - The best way to solve concurrency problem is not by slapping a mutex and call it a day, identifying which path is unsafe for access, with a well defined boundary is more important.
 
 ## Improvements
+- There are many cases my `tests/internal/runtime/brain_test.go` has not covered, i should add them.
+- The runtime and core are still entangled a bit, state machine should be a dependency, runtime bytes reading should not assume byte layout.
