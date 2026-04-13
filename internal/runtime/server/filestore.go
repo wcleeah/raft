@@ -75,6 +75,9 @@ func (fs *FileStore) ReplaceFrom(idx uint32, entries core.AppendEntries) {
 }
 
 func (fs *FileStore) WaitForDone() {
+	fs.Cond.L.Lock()
+	defer fs.Cond.L.Unlock()
+
 	for fs.processing {
 		fs.Cond.Wait()
 	}

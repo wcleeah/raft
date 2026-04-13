@@ -1,0 +1,39 @@
+{
+  "id": "node1",
+  "addr": "127.0.0.1:9001",
+  "store_path": "examples/three-node/data/node1.log",
+  "log_level": "debug",
+  "transport": {
+    "read_timeout_ms": 10000,
+    "write_timeout_ms": 10000
+  },
+  "timers": {
+    "heartbeat": {
+      "min_ms": 100,
+      "max_ms": 100
+    },
+    "election_timeout": {
+      "min_ms": 500,
+      "max_ms": 900,
+      "startup_grace_ms": 5000
+    },
+    "wait_before_election": {
+      "min_ms": 150,
+      "max_ms": 250
+    },
+    "restart_election": {
+      "min_ms": 300,
+      "max_ms": 450
+    }
+  },
+  "peers": [
+    {
+      "id": "node2",
+      "addr": "127.0.0.1:9002"
+    },
+    {
+      "id": "node3",
+      "addr": "127.0.0.1:9003"
+    }
+  ]
+}

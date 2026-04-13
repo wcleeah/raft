@@ -1,0 +1,12 @@
+[
+  {
+    "term": 4,
+    "counter_delta": 0,
+    "action": "flip"
+  },
+  {
+    "term": 5,
+    "counter_delta": 1,
+    "action": "minus"
+  }
+]
