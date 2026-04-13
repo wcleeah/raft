@@ -126,6 +126,10 @@ func (b *Brain) Close(reason error) {
 	})
 }
 
+func (b *Brain) CloseCh() <-chan struct{} {
+	return b.closeCh
+}
+
 func (b *Brain) CloseReason() error {
 	return b.closeReason
 }

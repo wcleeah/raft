@@ -19,9 +19,39 @@ import (
 // THIS SERVE AS A PART OF DETERMINISTIC TESTING FOR THE RUNTIME
 // THE GOAL IS TO CHECK IF EACH "EVENT": STATE EVENT / TIMER TICKS, ARE HANDLED CORRECTLY.
 // THIS WILL TEST:
+// - Start
 // - Each RaftState events' logic
 // - Each timer ticks' logic
 // - Timer cancellation logic
+
+func TestStart(t *testing.T) {
+	ass := assert.New(t)
+	b := giveMeATestBrain(5)
+	ctx, cancelFunc := context.WithCancel(context.Background())
+
+	b.Brain.Start(ctx, b.TransportCfg)
+
+	ass.Equal(b.FakeStore.Saved.LatestLog().Term, b.Brain.raftState.Term(), "Term not restored")
+	ass.Equal(b.Brain.raftState.Role(), core.RAFT_ROLE_FOLLOWER, "Role is not follower")
+	ass.Equal(b.Brain.raftState.Threshold(), uint32(3), "Node registration incorrect")
+
+	latestIdx, latestLog := b.Brain.entries.LatestLog()
+	// Restore should add one dummy item at the head, so idx will eq len
+	ass.Equal(b.FakeStore.Saved.Len(), latestIdx, "Restore failure: idx mismatch")
+	if diff := cmp.Diff(b.FakeStore.Saved.LatestLog(), latestLog); diff != "" {
+		ass.FailNowf("Restore failure: latest log mismatch", "mismatch (-want +got):\n%s", diff)
+	}
+
+	ass.NotNil(b.FakeTransport.ConnMap[b.BrainCfg.Id], "Self should be registered to transport")
+	for _, fellow := range b.Fellows {
+		ass.NotNil(fellow.ReqMap, "Request map should be initialized")
+		ass.NotNil(b.FakeTransport.ConnMap[fellow.Id], "Fellow should be registered to transport")
+	}
+
+	cancelFunc()
+	<-b.Brain.CloseCh()
+	ass.ErrorIs(context.Canceled, b.Brain.CloseReason(), "Close reason should be cancelled")
+}
 
 func TestHandleStateEvent_RoleChange(t *testing.T) {
 	ass := assert.New(t)

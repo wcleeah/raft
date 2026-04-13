@@ -8,6 +8,11 @@ import (
 	"com.lwc.raft/internal/core"
 )
 
+var (
+	TransIdNotRegErr = errors.New("Id not registered") 
+	TransIdRegErr = errors.New("Id registered")
+)
+
 type Transport struct {
 	once sync.Once
 
@@ -19,10 +24,10 @@ type Transport struct {
 
 func (t *Transport) Send(id string, bs []byte) error {
 	if t.connMap == nil {
-		return errors.New("Id nto registered")
+		return TransIdNotRegErr 
 	}
 	if _, ok := t.connMap[id]; !ok {
-		return errors.New("Id not registered")
+		return TransIdNotRegErr
 	}
 
 	return t.connMap[id].Write(bs)
@@ -31,7 +36,7 @@ func (t *Transport) Send(id string, bs []byte) error {
 func (t *Transport) RegisterSelf(id string, addr string, th core.TransportHandler, cfg core.TransportCfg) error {
 	t.setupMap()
 	if _, ok := t.connMap[id]; ok {
-		return errors.New("Self registered")
+		return TransIdRegErr
 	}
 
 	t.connMap[id] = &Conn{
@@ -51,8 +56,9 @@ func (t *Transport) RegisterSelf(id string, addr string, th core.TransportHandle
 func (t *Transport) RegisterPeer(id string, addr string, th core.TransportHandler, cfg core.TransportCfg) error {
 	t.setupMap()
 	if _, ok := t.connMap[id]; ok {
-		return errors.New("Id registered")
+		return TransIdRegErr
 	}
+
 	t.connMap[id] = &Conn{
 		Addr:     addr,
 		Gcf:      t.DialGcf,
