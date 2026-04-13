@@ -62,7 +62,7 @@ func TestEventFunc_ElectionTimeoutLoop(t *testing.T) {
 		go loop(errCh, b.Brain, context.Background(), 0)
 		err := <-errCh
 
-		ass.ErrorIs(err, BRAIN_ROLE_GEN_EXPIRED, "Role Gen checking is not implemented")
+		ass.ErrorIs(err, BrainRoleGenExpErr, "Role Gen checking is not implemented")
 	})
 
 	t.Run("Timer fired", func(t *testing.T) {
@@ -119,7 +119,7 @@ func TestEventFunc_ElectionLoop(t *testing.T) {
 		go loop(errCh, b.Brain, context.Background(), 0)
 		err := <-errCh
 
-		ass.ErrorIs(err, BRAIN_ROLE_GEN_EXPIRED, "Role Gen checking is not implemented")
+		ass.ErrorIs(err, BrainRoleGenExpErr, "Role Gen checking is not implemented")
 	})
 
 	t.Run("Wait For Election Timer fired", func(t *testing.T) {
@@ -190,7 +190,7 @@ func TestEventFunc_HeartbeatLoop(t *testing.T) {
 		go loop(errCh, b.Brain, context.Background(), 0)
 		err := <-errCh
 
-		ass.ErrorIs(err, BRAIN_ROLE_GEN_EXPIRED, "Role Gen checking is not implemented")
+		ass.ErrorIs(err, BrainRoleGenExpErr, "Role Gen checking is not implemented")
 	})
 
 	t.Run("Context Done", func(t *testing.T) {
@@ -348,7 +348,7 @@ func TestWaitForElectionTimer(t *testing.T) {
 		b.Brain.roleGen++
 		err := b.Brain.waitForElectionTimer(context.Background(), b.Brain.roleGen-1)
 
-		ass.ErrorIs(err, BRAIN_ROLE_GEN_EXPIRED, "Role Gen checking is not implemented")
+		ass.ErrorIs(err, BrainRoleGenExpErr, "Role Gen checking is not implemented")
 	})
 
 	t.Run("Context Done", func(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	BRAIN_ROLE_GEN_EXPIRED = errors.New("Role Gen Expired")
+	BrainRoleGenExpErr = errors.New("Role Gen Expired")
 )
 
 type Fellow struct {
@@ -357,7 +357,7 @@ func (b *Brain) electionTimeoutLoop(ctx context.Context, rg int) error {
 		b.roleLoopMu.Lock()
 		if rg < b.roleGen {
 			b.roleLoopMu.Unlock()
-			return BRAIN_ROLE_GEN_EXPIRED
+			return BrainRoleGenExpErr
 		}
 		b.roleLoopMu.Unlock()
 
@@ -386,7 +386,7 @@ func (b *Brain) electionLoop(ctx context.Context, rg int) error {
 		b.roleLoopMu.Lock()
 		if rg < b.roleGen {
 			b.roleLoopMu.Unlock()
-			return BRAIN_ROLE_GEN_EXPIRED
+			return BrainRoleGenExpErr
 		}
 		b.roleLoopMu.Unlock()
 
@@ -428,7 +428,7 @@ func (b *Brain) heartbeatLoop(ctx context.Context, rg int) error {
 		b.roleLoopMu.Lock()
 		if rg < b.roleGen {
 			b.roleLoopMu.Unlock()
-			return BRAIN_ROLE_GEN_EXPIRED
+			return BrainRoleGenExpErr
 		}
 		b.roleLoopMu.Unlock()
 
@@ -525,7 +525,7 @@ func (b *Brain) waitForElectionTimer(ctx context.Context, rg int) error {
 	b.roleLoopMu.Lock()
 	if rg < b.roleGen {
 		b.roleLoopMu.Unlock()
-		return BRAIN_ROLE_GEN_EXPIRED
+		return BrainRoleGenExpErr
 	}
 	b.roleLoopMu.Unlock()
 	select {
