@@ -105,6 +105,13 @@ func NewAppendEntriesStore(store Store) *AppendEntriesStore {
 	}
 }
 
+func (ae *AppendEntriesStore) LastAppliedIdx() uint32 {
+	ae.mu.Lock()
+	defer ae.mu.Unlock()
+
+	return ae.lastAppliedIdx
+}
+
 func (ae *AppendEntriesStore) Copy() AppendEntries {
 	ae.mu.Lock()
 	defer ae.mu.Unlock()

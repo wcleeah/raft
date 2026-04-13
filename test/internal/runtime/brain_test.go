@@ -18,13 +18,12 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// THIS SERVE AS A DETERMINISTIC COORDINATION TESTING FOR THE RUNTIME (kind of, you know go is not that deterministic), THE GOAL IS TO CHECK IF EACH "TICK": RPC / TIMER, TRIGGERS A CORRECT RESULT
-//   - Deterministic timer / ticker
-//   - Deterministic transport
-//   - Fake follower
-// IT WILL TEST:
-//   - RPC communications based on state logic
-//   - Timer based action
+// THIS SERVE AS A PART OF DETERMINISTIC COORDINATION TESTING FOR THE RUNTIME. 
+// THE GOAL IS TO CHECK IF THE INTEGRATIONS WORKS CORRECTLY: RPC / TIMER, TRIGGERS A CORRECT RESULT.
+// THIS WILL TEST:
+//   - Start wiring
+//   - Inbound RPC communications: Triggered by transport, whether a response is received (some does not require a response) 
+//   - Outbound RPC communications: Triggered by timer tick, whether a request is received
 
 func TestCandidatePromotion(t *testing.T) {
 	b := giveMeATestBrain(3)

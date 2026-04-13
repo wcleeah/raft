@@ -3,15 +3,24 @@ package server
 import (
 	"os"
 	"path/filepath"
+	"sync"
 
 	"com.lwc.raft/internal/core"
 )
 
 type FileStore struct {
+	cond *sync.Cond
+
+	processing bool
 	Path string
 }
 
 func (fs *FileStore) ReplaceFrom(idx uint32, entries core.AppendEntries) {
+	fs.cond.L.Lock()
+	defer fs.cond.L.Unlock()
+	defer fs.cond.Broadcast()
+	fs.processing = true
+
 	fileIdx := idx - 1
 
 	existing := fs.Restore()
@@ -45,6 +54,14 @@ func (fs *FileStore) ReplaceFrom(idx uint32, entries core.AppendEntries) {
 	}
 
 	os.Rename(tmpPath, fs.Path)
+
+	fs.processing = false
+}
+
+func (fs *FileStore) WaitForDone() {
+	for fs.processing {
+		fs.cond.Wait()
+	}
 }
 
 func (fs *FileStore) Restore() core.AppendEntries {

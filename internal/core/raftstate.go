@@ -194,6 +194,14 @@ func (rs *RaftState) InitAsLeader(id string, latestLogIdx uint32) error {
 	}
 
 	rs.commitIndex = 0
+
+	if rs.matchIndex == nil {
+		rs.matchIndex = make(map[string]uint32)
+	}
+	if rs.nextIndex == nil {
+		rs.nextIndex = make(map[string]uint32)
+	}
+
 	for k := range rs.matchIndex {
 		if k == id {
 			rs.matchIndex[k] = latestLogIdx

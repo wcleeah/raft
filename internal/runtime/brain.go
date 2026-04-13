@@ -11,6 +11,10 @@ import (
 	"com.lwc.raft/internal/rpc"
 )
 
+var (
+	BRAIN_ROLE_GEN_EXPIRED = errors.New("Role Gen Expired")
+)
+
 type Fellow struct {
 	mapMu sync.Mutex
 
@@ -41,18 +45,23 @@ type BrainConfig struct {
 }
 
 type Brain struct {
-	entryMu   sync.Mutex
-	closeOnce sync.Once
+	entryMu    sync.Mutex
+	roleLoopMu sync.Mutex
+	closeOnce  sync.Once
 
-	entries      *core.AppendEntriesStore
-	l            *slog.Logger
-	raftState    *core.RaftState
-	stateMachine *core.StateMachine
-	deps         *BrainDeps
-	id           string
-	addr         string
-	fellows      map[string]*Fellow
-	closeReason  error
+	entries       *core.AppendEntriesStore
+	l             *slog.Logger
+	raftState     *core.RaftState
+	stateMachine  *core.StateMachine
+	deps          *BrainDeps
+	id            string
+	addr          string
+	fellows       map[string]*Fellow
+	closeReason   error
+	closeCh       chan struct{}
+	closed        atomic.Bool
+	roleGen       int
+	roleCtxCancel context.CancelFunc
 }
 
 func NewBrain(l *slog.Logger, deps *BrainDeps, cfg *BrainConfig) *Brain {
@@ -65,6 +74,7 @@ func NewBrain(l *slog.Logger, deps *BrainDeps, cfg *BrainConfig) *Brain {
 		id:           cfg.Id,
 		addr:         cfg.Addr,
 		fellows:      cfg.Fellows,
+		closeCh:      make(chan struct{}),
 	}
 }
 
@@ -76,6 +86,7 @@ func (b *Brain) Start(ctx context.Context, cfg core.TransportCfg) {
 	b.raftState.RestoreTerm(latestLog.Term)
 	b.l.Info("restored term from log store", "node_id", b.id, "restored_term", latestLog.Term)
 
+	b.handleStateEvent(core.RAFT_STATE_EVENT_ROLE_CHANGE)
 	go b.handleStateEventLoop()
 
 	// initiate connection for rpc request FROM this node and response for that request
@@ -97,7 +108,6 @@ func (b *Brain) Start(ctx context.Context, cfg core.TransportCfg) {
 	}
 
 	// default raft state role value is follower
-	b.switchToFollower()
 	b.l.Info("initial role set to follower", "node_id", b.id)
 }
 
@@ -105,10 +115,14 @@ func (b *Brain) Close(reason error) {
 	b.closeOnce.Do(func() {
 		b.closeReason = reason
 		b.deps.Transport.CloseAll(reason)
-		b.deps.ElectionTimeoutTimer.Stop()
-		b.deps.ElectionTimer.Stop()
-		b.deps.HeartbeatTimer.Stop()
-		b.deps.WaitForElectionTimer.Stop()
+		close(b.closeCh)
+		b.closed.Swap(true)
+
+		b.roleLoopMu.Lock()
+		defer b.roleLoopMu.Unlock()
+		if b.roleCtxCancel != nil {
+			b.roleCtxCancel()
+		}
 	})
 }
 
@@ -117,11 +131,18 @@ func (b *Brain) CloseReason() error {
 }
 
 func (b *Brain) monitorCtx(ctx context.Context) {
-	<-ctx.Done()
-	b.Close(ctx.Err())
+	select {
+	case <-ctx.Done():
+		b.Close(ctx.Err())
+	case <-b.closeCh:
+	}
 }
 
 func (b *Brain) handleRPC(id string, bs []byte) {
+	if b.closed.Load() {
+		return
+	}
+
 	frame := rpc.DecodeRPCFrame(bs)
 	fellow, ok := b.fellows[id]
 	if id != b.id && !ok {
@@ -139,6 +160,10 @@ func (b *Brain) handleRPC(id string, bs []byte) {
 			RelationId: frame.RelationId,
 			Payload:    res.Encode(),
 		}
+
+		if b.closed.Load() {
+			return
+		}
 		b.deps.Transport.Send(id, resFrame.Encode())
 	case rpc.RPC_TYPE_APPEND_ENTRIES_REQ:
 		b.l.Debug("received AppendEntries request", "node_id", b.id, "peer_id", id, "relation_id", frame.RelationId)
@@ -149,6 +174,10 @@ func (b *Brain) handleRPC(id string, bs []byte) {
 			RelationId: frame.RelationId,
 			Payload:    res.Encode(),
 		}
+
+		if b.closed.Load() {
+			return
+		}
 		b.deps.Transport.Send(id, resFrame.Encode())
 	case rpc.RPC_TYPE_STATE_ACTION_REQ:
 		b.l.Debug("received StateAction request", "node_id", b.id, "peer_id", id, "relation_id", frame.RelationId)
@@ -158,6 +187,10 @@ func (b *Brain) handleRPC(id string, bs []byte) {
 			RPCType:    rpc.RPC_TYPE_APPEND_ENTRIES_RES,
 			RelationId: frame.RelationId,
 			Payload:    res.Encode(),
+		}
+
+		if b.closed.Load() {
+			return
 		}
 		b.deps.Transport.Send(id, resFrame.Encode())
 	case rpc.RPC_TYPE_REQUEST_VOTE_RES:
@@ -279,55 +312,143 @@ func (b *Brain) handleStateActionReq(req rpc.StateActionReq) rpc.StateActionRes 
 func (b *Brain) handleStateEventLoop() {
 	b.l.Debug("state event handler started", "node_id", b.id)
 	for event := range b.raftState.EventCh() {
-		switch event {
-		case core.RAFT_STATE_EVENT_ROLE_CHANGE:
-			role := b.raftState.Role()
-			b.l.Info("role change event", "node_id", b.id, "new_role", role, "term", b.raftState.Term())
-			switch role {
-			case core.RAFT_ROLE_FOLLOWER:
-				b.switchToFollower()
-			case core.RAFT_ROLE_CANDIDATE:
-				b.switchToCandidate()
-			case core.RAFT_ROLE_LEADER:
-				b.switchToLeader()
+		if b.closed.Load() {
+			break
+		}
+		b.handleStateEvent(event)
+	}
+}
+
+func (b *Brain) handleStateEvent(event core.RaftStateEvent) {
+	switch event {
+	case core.RAFT_STATE_EVENT_ROLE_CHANGE:
+		b.roleLoopMu.Lock()
+		defer b.roleLoopMu.Unlock()
+
+		role := b.raftState.Role()
+		if b.roleCtxCancel != nil {
+			b.roleCtxCancel()
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		b.roleCtxCancel = cancel
+		b.roleGen++
+		rg := b.roleGen
+
+		b.l.Info("role change event", "node_id", b.id, "new_role", role, "term", b.raftState.Term())
+		switch role {
+		case core.RAFT_ROLE_FOLLOWER:
+			go b.electionTimeoutLoop(ctx, rg)
+		case core.RAFT_ROLE_CANDIDATE:
+			go b.electionLoop(ctx, rg)
+		case core.RAFT_ROLE_LEADER:
+			go b.heartbeatLoop(ctx, rg)
+		}
+	case core.RAFT_STATE_EVENT_COMMIT_IDX_CHANGE:
+		b.l.Debug("commit index changed", "node_id", b.id, "commit_idx", b.raftState.CommitIdx())
+		b.applyState()
+	}
+}
+
+func (b *Brain) electionTimeoutLoop(ctx context.Context, rg int) error {
+	b.l.Debug("starting election timeout countdown", "node_id", b.id)
+
+	for {
+		b.roleLoopMu.Lock()
+		if rg < b.roleGen {
+			b.roleLoopMu.Unlock()
+			return BRAIN_ROLE_GEN_EXPIRED
+		}
+		b.roleLoopMu.Unlock()
+
+		select {
+		case <-b.deps.ElectionTimeoutTimer.C():
+			b.l.Debug("fired election timeout countdown", "node_id", b.id)
+			err := b.handleElectionTimeoutTimerTick()
+			if err == nil {
+				continue
 			}
-		case core.RAFT_STATE_EVENT_COMMIT_IDX_CHANGE:
-			b.l.Debug("commit index changed", "node_id", b.id, "commit_idx", b.raftState.CommitIdx())
-			b.applyState()
+
+			return err
+		case <-ctx.Done():
+			b.l.Debug("ctx done, exiting countdown", "node_id", b.id)
+			return ctx.Err()
+		case <-b.closeCh:
+			b.l.Debug("node shutted down, exiting heartbeat loop", "node_id", b.id)
+			return b.closeReason
 		}
 	}
 }
 
-func (b *Brain) switchToFollower() {
-	b.l.Info("switching to follower", "node_id", b.id, "term", b.raftState.Term())
-	b.deps.HeartbeatTimer.Stop()
-	b.deps.ElectionTimer.Stop()
-	b.deps.WaitForElectionTimer.Stop()
+func (b *Brain) electionLoop(ctx context.Context, rg int) error {
+	b.l.Debug("entering election loop", "node_id", b.id)
+	for {
+		b.roleLoopMu.Lock()
+		if rg < b.roleGen {
+			b.roleLoopMu.Unlock()
+			return BRAIN_ROLE_GEN_EXPIRED
+		}
+		b.roleLoopMu.Unlock()
 
-	go b.startElectionTimeoutLoop()
+		select {
+		case <-b.deps.WaitForElectionTimer.C():
+			b.l.Debug("wait-for-election timer fired", "node_id", b.id)
+		case <-ctx.Done():
+			b.l.Debug("ctx done, exiting election loop", "node_id", b.id)
+			return ctx.Err()
+		case <-b.closeCh:
+			b.l.Debug("node shutted down, exiting election loop", "node_id", b.id)
+			return b.closeReason
+		}
+
+		err := b.handleWaitForElectionTimerTick()
+		if err != nil {
+			return err
+		}
+
+		err = b.waitForElectionTimer(ctx, rg)
+		if err != nil {
+			b.l.Debug("wait-for-election has error", "node_id", b.id, "err", err)
+			return err
+		}
+	}
 }
 
-func (b *Brain) switchToCandidate() {
-	b.l.Info("switching to candidate", "node_id", b.id, "term", b.raftState.Term())
-	b.deps.ElectionTimeoutTimer.Stop()
-	go b.electionLoop()
-}
-
-func (b *Brain) switchToLeader() {
-	b.l.Info("switching to leader", "node_id", b.id, "term", b.raftState.Term())
-	b.deps.ElectionTimer.Stop()
-	b.deps.WaitForElectionTimer.Stop()
-	b.deps.ElectionTimeoutTimer.Stop()
-
+func (b *Brain) heartbeatLoop(ctx context.Context, rg int) error {
 	latestLogIdx, _ := b.entries.LatestLog()
 	err := b.raftState.InitAsLeader(b.id, latestLogIdx)
 	if err != nil {
 		b.l.Error("failed to init as leader", "node_id", b.id, "error", err)
-		return
+		return err
 	}
 
-	b.l.Info("leader initialized", "node_id", b.id, "term", b.raftState.Term(), "latest_log_index", latestLogIdx)
-	go b.heartbeatLoop()
+	b.l.Debug("heartbeat loop started", "node_id", b.id)
+
+	for {
+		b.roleLoopMu.Lock()
+		if rg < b.roleGen {
+			b.roleLoopMu.Unlock()
+			return BRAIN_ROLE_GEN_EXPIRED
+		}
+		b.roleLoopMu.Unlock()
+
+		if b.closed.Load() {
+			return b.closeReason
+		}
+
+		b.handleHeartBeatTimerTick()
+
+		select {
+		case <-b.deps.HeartbeatTimer.C():
+			b.l.Debug("heartbeat timer tick", "node_id", b.id)
+		case <-ctx.Done():
+			b.l.Debug("ctx done, exiting heartbeat loop", "node_id", b.id)
+			return ctx.Err()
+		case <-b.closeCh:
+			b.l.Debug("node shutted down, exiting heartbeat loop", "node_id", b.id)
+			return b.closeReason
+		}
+	}
 }
 
 func (b *Brain) applyState() {
@@ -344,130 +465,147 @@ func (b *Brain) applyState() {
 	}
 }
 
-func (b *Brain) heartbeatLoop() {
-	b.l.Debug("heartbeat loop started", "node_id", b.id)
-Outer:
-	for {
-		commitIdx := b.raftState.CommitIdx()
-		term := b.raftState.Term()
-		b.l.Debug("sending heartbeat round", "node_id", b.id, "term", term, "commit_idx", commitIdx)
-
-		for _, fellow := range b.fellows {
-			nextIndex := b.raftState.NextIndex(fellow.Id)
-			prevLogIdx := nextIndex
-			if prevLogIdx != 0 {
-				prevLogIdx--
-			}
-			prevLog, err := b.entries.Get(prevLogIdx)
-			if err != nil {
-				b.l.Error("failed to get prev log for heartbeat", "node_id", b.id, "peer_id", fellow.Id, "prev_log_index", prevLogIdx, "error", err)
-				continue
-			}
-			payload := rpc.AppendEntriesReq{
-				Term:         term,
-				LeaderCommit: commitIdx,
-				PrevLogIndex: prevLogIdx,
-				PrevLogTerm:  prevLog.Term,
-				LeaderId:     b.id,
-				Entries:      b.entries.GetHeartbeatEntries(nextIndex).Encode(),
-			}
-			rId := fellow.RelationId.Add(1)
-			frame := rpc.Frame{
-				RPCType:    rpc.RPC_TYPE_APPEND_ENTRIES_REQ,
-				RelationId: rId,
-				Payload:    payload.Encode(),
-			}
-
-			fellow.mapMu.Lock()
-			fellow.ReqMap[rId] = &payload
-			fellow.mapMu.Unlock()
-
-			b.deps.Transport.Send(fellow.Id, frame.Encode())
-			b.l.Debug("heartbeat sent", "node_id", b.id, "peer_id", fellow.Id, "relation_id", rId, "next_index", nextIndex, "prev_log_index", prevLogIdx)
-		}
-
-		select {
-		case <-b.deps.HeartbeatTimer.C():
-			b.l.Debug("heartbeat timer tick", "node_id", b.id)
-		case <-b.deps.HeartbeatTimer.S():
-			b.l.Debug("heartbeat timer stopped, exiting heartbeat loop", "node_id", b.id)
-			break Outer
-		}
+func (b *Brain) handleElectionTimeoutTimerTick() error {
+	if b.raftState.IsVoted() {
+		b.l.Debug("election timeout fired but already voted, resetting", "node_id", b.id)
+		return nil
 	}
+	b.l.Info("election timeout expired, promoting to candidate", "node_id", b.id, "term", b.raftState.Term())
+	b.raftState.UpdateRole(core.RAFT_ROLE_CANDIDATE)
+
+	return errors.New("election timeout expired")
 }
 
-func (b *Brain) startElectionTimeoutLoop() {
-	b.l.Debug("starting election timeout countdown", "node_id", b.id)
-	for {
-		select {
-		case <-b.deps.ElectionTimeoutTimer.C():
-			if b.raftState.IsVoted() {
-				b.l.Debug("election timeout fired but already voted, resetting", "node_id", b.id)
-				continue
-			}
-			b.l.Info("election timeout expired, promoting to candidate", "node_id", b.id, "term", b.raftState.Term())
-			b.raftState.UpdateRole(core.RAFT_ROLE_CANDIDATE)
-			return
-		case <-b.deps.ElectionTimeoutTimer.S():
-			b.l.Debug("election timeout timer stopped, exiting countdown", "node_id", b.id)
-			return
+func (b *Brain) handleWaitForElectionTimerTick() error {
+	err := b.raftState.StartElection(b.id)
+	if err != nil {
+		b.l.Error("failed to start election", "node_id", b.id, "error", err)
+		return err
+	}
+	b.l.Info("election started", "node_id", b.id, "term", b.raftState.Term())
+
+	lastLogIndex, lastLog := b.entries.LatestLog()
+
+	for _, fellow := range b.fellows {
+		if b.closed.Load() {
+			return b.closeReason
 		}
+		if b.raftState.Role() != core.RAFT_ROLE_CANDIDATE {
+			return core.RaftStateNotACandidateErr
+		}
+
+		payload := rpc.RequestVoteReq{
+			Term:         b.raftState.Term(),
+			CandidateId:  b.id,
+			LastLogIndex: lastLogIndex,
+			LastLogTerm:  lastLog.Term,
+		}
+		rId := fellow.RelationId.Add(1)
+		frame := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_REQ,
+			RelationId: rId,
+			Payload:    payload.Encode(),
+		}
+
+		fellow.mapMu.Lock()
+		if fellow.ReqMap == nil {
+			fellow.ReqMap = make(map[uint32]rpc.RpcPayload)
+		}
+		fellow.ReqMap[rId] = &payload
+		fellow.mapMu.Unlock()
+
+		b.deps.Transport.Send(fellow.Id, frame.Encode())
+		b.l.Debug("RequestVote sent", "node_id", b.id, "peer_id", fellow.Id, "relation_id", rId, "term", b.raftState.Term(), "last_log_index", lastLogIndex, "last_log_term", lastLog.Term)
 	}
 
+	return nil
 }
 
-func (b *Brain) electionLoop() {
-	b.l.Debug("entering election loop", "node_id", b.id)
-	for {
-		select {
-		case <-b.deps.WaitForElectionTimer.C():
-			b.l.Debug("wait-for-election timer fired", "node_id", b.id)
-		case <-b.deps.WaitForElectionTimer.S():
-			b.l.Debug("wait-for-election timer stopped, exiting election loop", "node_id", b.id)
-			return
-		}
-
-		err := b.raftState.StartElection(b.id)
+func (b *Brain) waitForElectionTimer(ctx context.Context, rg int) error {
+	b.roleLoopMu.Lock()
+	if rg < b.roleGen {
+		b.roleLoopMu.Unlock()
+		return BRAIN_ROLE_GEN_EXPIRED
+	}
+	b.roleLoopMu.Unlock()
+	select {
+	case <-b.deps.ElectionTimer.C():
+		err := b.handleElectionTimerTick()
 		if err != nil {
-			b.l.Error("failed to start election", "node_id", b.id, "error", err)
-			return
+			return err
 		}
-		b.l.Info("election started", "node_id", b.id, "term", b.raftState.Term())
-
-		lastLogIndex, lastLog := b.entries.LatestLog()
-
-		for _, fellow := range b.fellows {
-			payload := rpc.RequestVoteReq{
-				Term:         b.raftState.Term(),
-				CandidateId:  b.id,
-				LastLogIndex: lastLogIndex,
-				LastLogTerm:  lastLog.Term,
-			}
-			rId := fellow.RelationId.Add(1)
-			frame := rpc.Frame{
-				RPCType:    rpc.RPC_TYPE_REQUEST_VOTE_REQ,
-				RelationId: rId,
-				Payload:    payload.Encode(),
-			}
-			fellow.mapMu.Lock()
-			fellow.ReqMap[rId] = &payload
-			fellow.mapMu.Unlock()
-
-			b.deps.Transport.Send(fellow.Id, frame.Encode())
-			b.l.Debug("RequestVote sent", "node_id", b.id, "peer_id", fellow.Id, "relation_id", rId, "term", b.raftState.Term(), "last_log_index", lastLogIndex, "last_log_term", lastLog.Term)
-		}
-
-		select {
-		case <-b.deps.ElectionTimer.C():
-			b.l.Debug("election timer expired, no winner yet", "node_id", b.id, "term", b.raftState.Term())
-			err := b.raftState.StopElection()
-			if err != nil {
-				b.l.Error("failed to stop election", "node_id", b.id, "error", err)
-				return
-			}
-		case <-b.deps.ElectionTimer.S():
-			b.l.Debug("election timer stopped, exiting election loop", "node_id", b.id)
-			return
-		}
+	case <-ctx.Done():
+		b.l.Debug("ctx done, exiting election loop", "node_id", b.id)
+		return ctx.Err()
+	case <-b.closeCh:
+		b.l.Debug("node shutted down, exiting election loop", "node_id", b.id)
+		return b.closeReason
 	}
+
+	return nil
+}
+
+func (b *Brain) handleElectionTimerTick() error {
+	b.l.Debug("election timer expired, no winner yet", "node_id", b.id, "term", b.raftState.Term())
+
+	err := b.raftState.StopElection()
+	if err != nil {
+		b.l.Error("failed to stop election", "node_id", b.id, "error", err)
+		return err
+	}
+
+	return nil
+}
+
+func (b *Brain) handleHeartBeatTimerTick() error {
+	commitIdx := b.raftState.CommitIdx()
+	term := b.raftState.Term()
+	b.l.Debug("sending heartbeat round", "node_id", b.id, "term", term, "commit_idx", commitIdx)
+
+	for _, fellow := range b.fellows {
+		if b.closed.Load() {
+			return b.closeReason
+		}
+		if b.raftState.Role() != core.RAFT_ROLE_LEADER {
+			return core.RaftStateNotALeaderErr
+		}
+
+		nextIndex := b.raftState.NextIndex(fellow.Id)
+		prevLogIdx := nextIndex
+		if prevLogIdx != 0 {
+			prevLogIdx--
+		}
+		prevLog, err := b.entries.Get(prevLogIdx)
+		if err != nil {
+			b.l.Error("failed to get prev log for heartbeat", "node_id", b.id, "peer_id", fellow.Id, "prev_log_index", prevLogIdx, "error", err)
+			return err
+		}
+
+		payload := rpc.AppendEntriesReq{
+			Term:         term,
+			LeaderCommit: commitIdx,
+			PrevLogIndex: prevLogIdx,
+			PrevLogTerm:  prevLog.Term,
+			LeaderId:     b.id,
+			Entries:      b.entries.GetHeartbeatEntries(nextIndex).Encode(),
+		}
+		rId := fellow.RelationId.Add(1)
+		frame := rpc.Frame{
+			RPCType:    rpc.RPC_TYPE_APPEND_ENTRIES_REQ,
+			RelationId: rId,
+			Payload:    payload.Encode(),
+		}
+
+		fellow.mapMu.Lock()
+		if fellow.ReqMap == nil {
+			fellow.ReqMap = make(map[uint32]rpc.RpcPayload)
+		}
+		fellow.ReqMap[rId] = &payload
+		fellow.mapMu.Unlock()
+
+		b.deps.Transport.Send(fellow.Id, frame.Encode())
+		b.l.Debug("heartbeat sent", "node_id", b.id, "peer_id", fellow.Id, "relation_id", rId, "next_index", nextIndex, "prev_log_index", prevLogIdx)
+	}
+
+	return nil
 }
