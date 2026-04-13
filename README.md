@@ -22,41 +22,24 @@ Lives under `internal/runtime`. This is the brain of the Raft implementation, it
 ## Testing
 
 ## Running It
-
-Build or run directly:
-
-```bash
-go build ./cmd/server ./cmd/client
-```
-
-Example configs live in `examples/three-node/`:
-
-- `examples/three-node/node1.json`
-- `examples/three-node/node2.json`
-- `examples/three-node/node3.json`
-
-Start the three local nodes in separate terminals:
-
+The server is config file based, checkout the example configs under `examples/three-node/`, to start the servers:
 ```bash
 go run ./cmd/server -config examples/three-node/node1.json
 go run ./cmd/server -config examples/three-node/node2.json
 go run ./cmd/server -config examples/three-node/node3.json
 ```
 
-Send client commands:
-
+There is a client command for sending command as well:
 ```bash
 go run ./cmd/client add -addr 127.0.0.1:9001 -delta 3
 go run ./cmd/client minus -addr 127.0.0.1:9002 -delta 1
 go run ./cmd/client flip -addr 127.0.0.1:9003
 ```
-
-The client follows one redirect automatically if it hits a follower that knows the current leader.
-
-The example configs use a startup grace on election timeouts so you can bring the three nodes up by hand without the first node racing through many failed election terms immediately.
+Note:
+- The client follows one redirect automatically if it hits a follower that knows the current leader.
+- The example configs use a startup grace on election timeouts so you can bring the three nodes up by hand without the first node racing through many failed election terms immediately.
 
 Server config format:
-
 ```json
 {
   "id": "node1",
@@ -98,9 +81,7 @@ Server config format:
   ]
 }
 ```
-
-Notes:
-
+Note:
 - `peers` should exclude the current node.
 - `store_path` is created on demand by the server command.
 - Each timer supports `min_ms` and `max_ms`; fixed intervals are just `min_ms == max_ms`.
